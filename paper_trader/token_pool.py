@@ -2,88 +2,100 @@ from __future__ import annotations
 
 from datetime import timedelta
 from threading import Lock
+from typing import List
 
 from paper_trader.models import TokenStatus
 from paper_trader.utils import now_ist
 
 
 class TokenPool:
-    def __init__(self, tokens: list[str], min_gap_seconds: int = 5) -> None:
+    """
+    TokenPool manages up to 5 Groww access tokens with:
+    - cooldown enforcement
+    - failure marking
+    - round-robin selection
+    """
+
+    def __init__(self, tokens: List[str], min_gap_seconds: int = 5) -> None:
         if not tokens:
             raise ValueError("At least one access token is required")
-        if len(tokens) > 5:
+
+        cleaned = [t.strip() for t in tokens if t.strip()]
+        if not cleaned:
+            raise ValueError("Token input has no usable tokens")
+
+        if len(cleaned) > 5:
             raise ValueError("Maximum 5 access tokens are supported")
 
-        self._statuses: list[TokenStatus] = [
-            TokenStatus(token=t.strip()) for t in tokens if t.strip()
+        self._statuses: List[TokenStatus] = [
+            TokenStatus(token=t) for t in cleaned
         ]
-
-        if not self._statuses:
-            raise ValueError("Token file has no usable token")
 
         self._min_gap = timedelta(seconds=min_gap_seconds)
         self._cursor = 0
         self._lock = Lock()
 
-    # ----------------------------
-    # READ-ONLY SNAPSHOT (UI SAFE)
-    # ----------------------------
-    def statuses(self) -> list[TokenStatus]:
+    # ------------------------------------------------------------------
+    # SAFE READ-ONLY SNAPSHOT (for UI)
+    # ------------------------------------------------------------------
+    def statuses(self) -> List[TokenStatus]:
+        """
+        Returns a COPY of token statuses.
+        Never return internal references.
+        """
         with self._lock:
             return [
-                TokenStatus(
-                    token=s.token,
-                    active=s.active,
-                    last_used_at=s.last_used_at,
-                    last_error=s.last_error,
-                    calls_made=s.calls_made,
-                )
+                TokenStatus(**vars(s))
                 for s in self._statuses
             ]
 
-    # ----------------------------
-    # MARK TOKEN AS FAILED
-    # ----------------------------
+    # ------------------------------------------------------------------
+    # FAILURE HANDLING
+    # ------------------------------------------------------------------
     def mark_failed(self, token: str, error: str) -> None:
+        """
+        Mark a token inactive and store error as STRING ONLY.
+        """
         with self._lock:
             for s in self._statuses:
                 if s.token == token:
                     s.active = False
-                    s.last_error = error
+                    s.last_error = str(error)
                     return
 
-    # ----------------------------
-    # ROTATING TOKEN PICKER
-    # ----------------------------
+    # ------------------------------------------------------------------
+    # TOKEN ROTATION
+    # ------------------------------------------------------------------
     def choose_next(self) -> TokenStatus:
+        """
+        Select next usable token respecting cooldown.
+        Returns a COPY of TokenStatus.
+        """
         with self._lock:
-            if not any(s.active for s in self._statuses):
+            active_tokens = [s for s in self._statuses if s.active]
+            if not active_tokens:
                 raise RuntimeError("All tokens are inactive")
 
             attempts = 0
-            total = len(self._statuses)
+            now = now_ist()
 
-            while attempts < total:
+            while attempts < len(self._statuses):
                 status = self._statuses[self._cursor]
-                self._cursor = (self._cursor + 1) % total
+                self._cursor = (self._cursor + 1) % len(self._statuses)
                 attempts += 1
 
                 if not status.active:
                     continue
 
-                now = now_ist()
-                if status.last_used_at and now - status.last_used_at < self._min_gap:
-                    continue
+                if status.last_used_at:
+                    if now - status.last_used_at < self._min_gap:
+                        continue
 
+                # update internal state
                 status.last_used_at = now
                 status.calls_made += 1
-                return status
 
-            # fallback: pick first active token even if cooldown not met
-            for status in self._statuses:
-                if status.active:
-                    status.last_used_at = now_ist()
-                    status.calls_made += 1
-                    return status
+                # RETURN COPY — NEVER INTERNAL OBJECT
+                return TokenStatus(**vars(status))
 
-            raise RuntimeError("No usable token found")
+            raise RuntimeError("All active tokens are in cooldown")
