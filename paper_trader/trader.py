@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import List, Tuple
+from datetime import time as dtime
+from typing import Any
 
 from paper_trader.broker import GrowwPaperBroker
-from paper_trader.models import EngineSnapshot, TokenStatus
+from paper_trader.data_store import CsvStore
+from paper_trader.models import EngineSnapshot, Position, TokenStatus
+from paper_trader.risk import RiskManager
+from paper_trader.strategy import DirectionalTrend
 from paper_trader.token_pool import TokenPool
-from paper_trader.utils import InMemoryLogger, token_preview
+from paper_trader.utils import InMemoryLogger, now_ist, token_preview
 
 
 class PaperTraderEngine:
@@ -15,93 +19,120 @@ class PaperTraderEngine:
         self,
         broker: GrowwPaperBroker,
         token_pool: TokenPool,
-        poll_seconds: int,
-        quantity: int,
+        poll_seconds: int = 5,
+        quantity: int = 1,
     ) -> None:
-        self._broker = broker
-        self._token_pool = token_pool
-        self._poll_seconds = poll_seconds
-        self._quantity = quantity
+        self.broker = broker
+        self.tokens = token_pool
+        self.poll_seconds = max(5, poll_seconds)
+        self.quantity = max(1, quantity)
 
-        self._logger = InMemoryLogger()
-        self._running = False
+        self.logger = InMemoryLogger(capacity=500)
+        self.store = CsvStore()
+        self.risk = RiskManager()
+
+        self.trend = {
+            "NSE_NIFTY": DirectionalTrend(),
+            "NSE_BANKNIFTY": DirectionalTrend(),
+        }
+
+        self.positions: list[Position] = []
+        self.realized_pnl = 0.0
+
         self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._active_token: str = ""
 
-        self._realized_pnl = 0.0
-        self._unrealized_pnl = 0.0
-        self._active_token_preview: str | None = None
+        # 🔥 NEW: live LTP cache
+        self.latest_ltps: dict[str, float] = {}
 
-    # --------------------------------------------------
-    # ✅ TOKEN VALIDATION (FIXED)
-    # --------------------------------------------------
-    def validate_tokens(self) -> List[Tuple[str, bool, str]]:
-        """
-        Returns rows for UI:
-        (token_preview, usable, status_message)
-        """
-        rows: List[Tuple[str, bool, str]] = []
+    # ---------------- TOKEN ----------------
 
-        for status in self._token_pool.statuses():
-            preview = token_preview(status.token)
-
+    def validate_tokens(self) -> list[tuple[str, bool, str]]:
+        rows = []
+        for status in self.tokens.statuses():
             try:
-                ok, msg = self._broker.validate_token(status)
-
-                if ok:
-                    rows.append((preview, True, "valid"))
-                    self._logger.info(f"token_validation {preview} => valid")
-                else:
-                    rows.append((preview, False, msg))
-                    self._logger.info(f"token_validation {preview} => {msg}")
-
+                client = self.broker._client(status.token)
+                client.get_ltp(
+                    segment=client.SEGMENT_CASH,
+                    exchange_trading_symbols=("NSE_NIFTY",),
+                )
+                rows.append((token_preview(status.token), True, "valid"))
+                self.logger.info(f"token_validation {token_preview(status.token)} => valid")
             except Exception as exc:
-                err = str(exc)
-                rows.append((preview, False, err))
-                self._logger.info(f"token_validation {preview} => {err}")
-
+                self.tokens.mark_failed(status.token, str(exc))
+                rows.append((token_preview(status.token), False, str(exc)))
+                self.logger.info(
+                    f"token_validation {token_preview(status.token)} => {exc}"
+                )
         return rows
 
-    # --------------------------------------------------
-    # ENGINE CONTROL
-    # --------------------------------------------------
+    # ---------------- ENGINE CONTROL ----------------
+
     def start(self) -> None:
-        if self._running:
+        if self._thread and self._thread.is_alive():
             return
-        self._running = True
+        self._stop.clear()
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        self._logger.info("engine started")
+        self.logger.info("engine started")
 
     def stop(self) -> None:
-        self._running = False
-        self._logger.info("engine stopped")
+        self._stop.set()
+        self.logger.info("engine stopped")
 
-    # --------------------------------------------------
-    # MAIN LOOP (PAPER ONLY)
-    # --------------------------------------------------
-    def _run_loop(self) -> None:
-        while self._running:
-            try:
-                token_status = self._token_pool.choose_next()
-                self._active_token_preview = token_preview(token_status.token)
+    # ---------------- SNAPSHOT ----------------
 
-                # 🚧 PAPER TRADING PLACEHOLDER
-                # Strategy logic will go here later
-
-            except Exception as exc:
-                self._logger.info(f"engine_error {exc}")
-
-            time.sleep(self._poll_seconds)
-
-    # --------------------------------------------------
-    # SNAPSHOT FOR UI
-    # --------------------------------------------------
     def snapshot(self) -> EngineSnapshot:
         return EngineSnapshot(
-            running=self._running,
-            active_token_preview=self._active_token_preview or "",
-            realized_pnl=self._realized_pnl,
-            unrealized_pnl=self._unrealized_pnl,
-            open_positions=[],
-            logs=self._logger.tail(50),
+            running=bool(self._thread and self._thread.is_alive()),
+            active_token_preview=token_preview(self._active_token)
+            if self._active_token
+            else "-",
+            realized_pnl=self.realized_pnl,
+            unrealized_pnl=0.0,
+            open_positions=list(self.positions),
+            logs=self.logger.tail(50),
         )
+
+    # 🔥 NEW: expose LTPs
+    def get_latest_ltps(self) -> dict[str, float]:
+        return dict(self.latest_ltps)
+
+    # ---------------- LOOP ----------------
+
+    def _next_token(self) -> TokenStatus:
+        status = self.tokens.choose_next()
+        self._active_token = status.token
+        return status
+
+    def _run_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                now = now_ist().time()
+                if now < dtime(9, 15):
+                    time.sleep(self.poll_seconds)
+                    continue
+
+                self._poll_underlyings()
+
+            except Exception as exc:
+                self.logger.info(f"engine error: {exc}")
+
+            time.sleep(self.poll_seconds)
+
+    # ---------------- MARKET DATA ----------------
+
+    def _poll_underlyings(self) -> None:
+        token = self._next_token().token
+        client = self.broker._client(token)
+
+        resp = client.get_ltp(
+            segment=client.SEGMENT_CASH,
+            exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
+        )
+
+        for symbol, payload in resp.items():
+            ltp = float(payload["ltp"])
+            self.latest_ltps[symbol] = ltp
+            self.logger.info(f"LTP {symbol} = {ltp}")
