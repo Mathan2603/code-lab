@@ -1,202 +1,169 @@
-from __future__ import annotations
-import time
-import uuid
+# app.py
 import streamlit as st
-from datetime import datetime
+import time
+import pandas as pd
 from growwapi import GrowwAPI
 
 # =========================
 # PAGE CONFIG
 # =========================
 st.set_page_config(
-    page_title="Groww Paper Trader",
-    page_icon="📈",
-    layout="wide",
+    page_title="Groww Paper Trading Dashboard",
+    layout="wide"
 )
 
-st.title("📈 Groww Paper Trading Dashboard")
-st.caption("Index + Weekly + Monthly F&O • Paper Trading • Multi-Token")
+st.title("📊 Groww Paper Trading Dashboard")
+st.caption("Index + Weekly + Monthly F&O • Auto-refresh")
 
 # =========================
-# SESSION STATE INIT
+# SESSION STATE
 # =========================
-def init_state():
-    defaults = {
-        "tokens": {},
-        "last_refresh": 0.0,
-        "trade_log": [],
-        "error_log": [],
-        "positions": [],
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
+if "api" not in st.session_state:
+    st.session_state.api = None
 
-init_state()
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = 0
+
+if "error_logs" not in st.session_state:
+    st.session_state.error_logs = []
 
 # =========================
-# SIDEBAR – TOKENS
+# SIDEBAR
 # =========================
 with st.sidebar:
-    st.header("🔑 Groww Tokens (Max 5)")
+    st.header("🔑 Groww Token")
+    token = st.text_area("Paste Groww Access Token", height=120)
 
-    temp_tokens = {}
-
-    for i in range(5):
-        token = st.text_area(
-            f"Token {i+1}",
-            key=f"token_input_{i}",
-            height=80,
-        )
-        if token.strip():
-            temp_tokens[i] = token.strip()
-
-    st.session_state.tokens = temp_tokens
-
-    refresh_interval = st.number_input(
-        "Refresh Interval (seconds)",
-        min_value=5,
-        max_value=30,
-        value=5,
-        step=1,
+    weekly_symbol = st.text_input(
+        "Weekly Option Symbol",
+        value="NIFTY2621026400CE"
     )
+
+    monthly_symbols = st.text_area(
+        "Monthly Option Symbols (comma separated)",
+        value="NSE_NIFTY25JAN24500CE,NSE_NIFTY25JAN24500PE"
+    )
+
+    refresh_sec = st.number_input(
+        "Refresh interval (seconds)",
+        min_value=2,
+        value=5
+    )
+
+    init = st.button("🚀 Initialize API")
+
+# =========================
+# INIT API
+# =========================
+if init and token.strip():
+    try:
+        st.session_state.api = GrowwAPI(token.strip())
+        st.success("Groww API initialized successfully")
+    except Exception as e:
+        st.error(str(e))
+
+api = st.session_state.api
 
 # =========================
 # AUTO REFRESH (SAFE)
 # =========================
 now = time.time()
-if now - st.session_state.last_refresh >= refresh_interval:
+if now - st.session_state.last_refresh >= refresh_sec:
     st.session_state.last_refresh = now
     st.rerun()
 
 # =========================
-# NO TOKEN GUARD (IMPORTANT)
+# INDEX LTP
 # =========================
-if not st.session_state.tokens:
-    st.info("👈 Paste at least one Groww token to start")
-    st.stop()
+st.subheader("📈 Index LTP")
 
-# =========================
-# TOKEN TABS
-# =========================
-tab_labels = [f"Token {i+1}" for i in st.session_state.tokens.keys()]
-tabs = st.tabs(tab_labels)
-
-for tab_idx, token_key in enumerate(st.session_state.tokens):
-    with tabs[tab_idx]:
-        token = st.session_state.tokens[token_key]
-
-        try:
-            groww = GrowwAPI(token)
-            st.success("Groww API initialized")
-        except Exception as e:
-            st.error("Invalid token")
-            st.session_state.error_log.append(str(e))
-            continue
-
-        # =========================
-        # INDEX LTP
-        # =========================
-        st.subheader("📊 Index LTP")
-        try:
-            index_ltp = groww.get_ltp(
-                segment=groww.SEGMENT_CASH,
-                exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
+if api:
+    try:
+        index_ltp = api.get_ltp(
+            segment=api.SEGMENT_CASH,
+            exchange_trading_symbols=(
+                "NSE_NIFTY",
+                "NSE_BANKNIFTY"
             )
-            st.table(
-                [{"Symbol": k, "LTP": v} for k, v in index_ltp.items()]
-            )
-        except Exception as e:
-            st.error(e)
-            st.session_state.error_log.append(str(e))
-
-        # =========================
-        # WEEKLY OPTION LTP (CONFIRMED LOGIC)
-        # =========================
-        st.subheader("🧾 Weekly Option LTP")
-        weekly_symbol = st.text_input(
-            "Weekly Option Symbol",
-            value="NIFTY2621026400CE",
-            key=f"weekly_{tab_idx}",
         )
 
-        try:
-            quote = groww.get_quote(
-                groww.EXCHANGE_NSE,
-                groww.SEGMENT_FNO,
-                weekly_symbol,
-            )
-            st.table(
-                [{"Symbol": weekly_symbol, "LTP": quote.get("last_price")}]
-            )
-        except Exception as e:
-            st.error(e)
-            st.session_state.error_log.append(str(e))
+        df_index = pd.DataFrame([
+            {"Symbol": k, "LTP": v}
+            for k, v in index_ltp.items()
+        ])
+        st.dataframe(df_index, use_container_width=True)
 
-        # =========================
-        # MONTHLY OPTIONS MULTI-LTP
-        # =========================
-        st.subheader("📈 Monthly Options (Multi-LTP)")
-        monthly_symbols = st.text_area(
-            "Monthly Symbols (comma separated)",
-            value="NSE_NIFTY25JAN24500CE,NSE_NIFTY25JAN24500PE",
-            key=f"monthly_{tab_idx}",
+    except Exception as e:
+        st.error(str(e))
+        st.session_state.error_logs.append(str(e))
+else:
+    st.info("Initialize API")
+
+# =========================
+# WEEKLY OPTION (QUOTE API)
+# =========================
+st.subheader("📄 Weekly Option LTP")
+
+if api:
+    try:
+        quote = api.get_quote(
+            exchange=api.EXCHANGE_NSE,
+            segment=api.SEGMENT_FNO,
+            trading_symbol=weekly_symbol.strip()
         )
 
-        try:
-            symbols = tuple(s.strip() for s in monthly_symbols.split(",") if s.strip())
-            if symbols:
-                monthly_ltp = groww.get_ltp(
-                    segment=groww.SEGMENT_FNO,
-                    exchange_trading_symbols=symbols,
-                )
-                st.table(
-                    [{"Symbol": k, "LTP": v} for k, v in monthly_ltp.items()]
-                )
-        except Exception as e:
-            st.error(e)
-            st.session_state.error_log.append(str(e))
+        st.metric(
+            label=weekly_symbol,
+            value=quote.get("last_price")
+        )
 
-        # =========================
-        # PAPER TRADE
-        # =========================
-        st.subheader("🧠 Paper Trade")
-        with st.form(f"trade_form_{tab_idx}"):
-            symbol = st.text_input("Symbol")
-            qty = st.number_input("Quantity", min_value=1, value=1)
-            price = st.number_input("Price", min_value=0.0)
-            side = st.selectbox("Side", ["BUY", "SELL"])
-            submit = st.form_submit_button("Execute")
+    except Exception as e:
+        st.error(str(e))
+        st.session_state.error_logs.append(str(e))
 
-            if submit:
-                trade = {
-                    "id": str(uuid.uuid4())[:8],
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "symbol": symbol,
-                    "qty": qty,
-                    "price": price,
-                    "side": side,
-                }
-                st.session_state.trade_log.append(trade)
-                st.session_state.positions.append(trade)
-                st.success("Paper trade executed")
+# =========================
+# MONTHLY OPTIONS (MULTI LTP)
+# =========================
+st.subheader("📊 Monthly Options (Multi-LTP)")
+
+if api:
+    try:
+        symbols = [
+            s.strip()
+            for s in monthly_symbols.split(",")
+            if s.strip()
+        ]
+
+        if symbols:
+            monthly_ltp = api.get_ltp(
+                segment=api.SEGMENT_FNO,
+                exchange_trading_symbols=tuple(symbols)
+            )
+
+            df_monthly = pd.DataFrame([
+                {"Symbol": k, "LTP": v}
+                for k, v in monthly_ltp.items()
+            ])
+            st.dataframe(df_monthly, use_container_width=True)
+        else:
+            st.info("Enter monthly symbols")
+
+    except Exception as e:
+        st.error(str(e))
+        st.session_state.error_logs.append(str(e))
 
 # =========================
 # LOGS
 # =========================
-st.divider()
-st.subheader("🧾 Trade Logs")
-st.table(st.session_state.trade_log)
+st.subheader("🧾 Error Logs")
 
-st.subheader("🚨 Error Logs")
-st.table([{"Error": e} for e in st.session_state.error_log[-50:]])
-
-# =========================
-# PNL
-# =========================
-st.subheader("📊 PnL Summary")
-pnl = 0.0
-for t in st.session_state.positions:
-    pnl += t["price"] * t["qty"] * (1 if t["side"] == "SELL" else -1)
-
-st.metric("Net PnL", round(pnl, 2))
+if st.session_state.error_logs:
+    st.dataframe(
+        pd.DataFrame(
+            st.session_state.error_logs[-20:],
+            columns=["Error"]
+        ),
+        use_container_width=True
+    )
+else:
+    st.write("No errors")
