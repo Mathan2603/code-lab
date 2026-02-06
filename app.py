@@ -1,7 +1,12 @@
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
+
 from paper_trader.broker import GrowwPaperBroker
 from paper_trader.token_pool import TokenPool
 from paper_trader.trader import PaperTraderEngine
+
+# 🔁 AUTO REFRESH EVERY 5 SECONDS
+st.autorefresh(interval=5000, key="refresh")
 
 st.set_page_config(layout="wide")
 st.title("📈 Groww NSE Paper Trading Dashboard")
@@ -21,9 +26,8 @@ if st.sidebar.button("Initialize tokens"):
     broker = GrowwPaperBroker()
     pool = TokenPool(tokens)
     engine = PaperTraderEngine(broker, pool, poll, qty)
-    rows = engine.validate_tokens()
+    engine.validate_tokens()
     st.session_state.engine = engine
-    st.session_state.rows = rows
 
 if st.sidebar.button("Start") and st.session_state.engine:
     st.session_state.engine.start()
