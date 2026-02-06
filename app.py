@@ -17,7 +17,7 @@ st.set_page_config(
 st.title("📈 Groww NSE Paper Trading Dashboard")
 
 # ============================
-# SESSION STATE
+# SESSION STATE INIT
 # ============================
 if "broker" not in st.session_state:
     st.session_state.broker = None
@@ -27,6 +27,9 @@ if "running" not in st.session_state:
 
 if "logs" not in st.session_state:
     st.session_state.logs = []
+
+if "last_fetch_ts" not in st.session_state:
+    st.session_state.last_fetch_ts = 0.0
 
 if "ltp_index" not in st.session_state:
     st.session_state.ltp_index: Dict[str, float] = {}
@@ -77,10 +80,15 @@ st.subheader("Bot status")
 st.markdown("🟢 Running" if st.session_state.running else "🔴 Stopped")
 
 # ============================
-# MAIN LOOP (REFRESH LOCKED)
+# FETCH LOGIC (CORRECT WAY)
 # ============================
-if st.session_state.running and st.session_state.broker:
+now = time.time()
 
+if (
+    st.session_state.running
+    and st.session_state.broker
+    and now - st.session_state.last_fetch_ts >= poll_seconds
+):
     try:
         broker = st.session_state.broker
 
@@ -88,57 +96,48 @@ if st.session_state.running and st.session_state.broker:
         # INDEX LTP (CASH)
         # ----------------------------
         index_symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
-
         index_ltp = broker.get_index_ltp(index_symbols)
 
-        # ✅ FORCE DICT NORMALIZATION
-        if isinstance(index_ltp, dict):
-            st.session_state.ltp_index = index_ltp
-        else:
-            raise ValueError(f"Index LTP invalid type: {type(index_ltp)}")
+        if not isinstance(index_ltp, dict):
+            raise ValueError("Index LTP must be dict")
+
+        st.session_state.ltp_index = index_ltp
 
         # ----------------------------
-        # F&O MONTHLY (MULTI SYMBOL)
+        # F&O MONTHLY (MULTI)
         # ----------------------------
         monthly_symbols = [
             "NSE_NIFTY26FEB24500CE",
             "NSE_NIFTY26FEB24600CE",
         ]
-
         monthly_ltp = broker.get_fno_monthly_ltp(monthly_symbols)
 
         if not isinstance(monthly_ltp, dict):
-            raise ValueError("Monthly FNO LTP must return dict")
+            raise ValueError("Monthly FNO LTP must be dict")
 
         # ----------------------------
-        # F&O WEEKLY (SINGLE SYMBOL ONLY)
+        # F&O WEEKLY (SINGLE)
         # ----------------------------
         weekly_symbol = "NIFTY2621020400CE"
-
         weekly_ltp = broker.get_fno_weekly_ltp(weekly_symbol)
 
         if not isinstance(weekly_ltp, dict):
-            raise ValueError("Weekly FNO LTP must return dict")
+            raise ValueError("Weekly FNO LTP must be dict")
 
-        # ----------------------------
-        # MERGE F&O DATA
-        # ----------------------------
-        fno_ltp: Dict[str, float] = {}
+        fno_ltp = {}
         fno_ltp.update(monthly_ltp)
         fno_ltp.update(weekly_ltp)
 
         st.session_state.ltp_fno = fno_ltp
 
         st.session_state.logs.append(
-            f"LTP fetched | INDEX={st.session_state.ltp_index} | FNO={st.session_state.ltp_fno}"
+            f"LTP fetched | INDEX={index_ltp} | FNO={fno_ltp}"
         )
+
+        st.session_state.last_fetch_ts = now
 
     except Exception as e:
         st.session_state.logs.append(f"engine error: {e}")
-
-    # 🔒 REFRESH (DO NOT TOUCH)
-    time.sleep(poll_seconds)
-    st.rerun()
 
 # ============================
 # DISPLAY INDEX LTP
