@@ -1,6 +1,9 @@
 from __future__ import annotations
+
 import threading
 import time
+from typing import Dict
+
 from paper_trader.broker import GrowwPaperBroker
 from paper_trader.token_pool import TokenPool
 from paper_trader.utils import now_ist, token_preview
@@ -12,10 +15,10 @@ def extract_ltp(payload, symbol: str) -> float:
         return float(payload)
 
     if isinstance(payload, dict):
-        val = payload.get(symbol)
-        if isinstance(val, dict):
-            return float(val.get("ltp"))
-        return float(val)
+        value = payload.get(symbol)
+        if isinstance(value, dict):
+            return float(value.get("ltp"))
+        return float(value)
 
     raise RuntimeError(f"Unable to extract LTP for {symbol}")
 
@@ -33,12 +36,14 @@ class PaperTraderEngine:
         self.poll_seconds = poll_seconds
         self.quantity = quantity
 
-        self._thread = None
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
-        self.active_token = ""
+        self.active_token: str = ""
         self.logs: list[str] = []
-        self.last_prices: dict[str, float] = {}
+
+        self.cash_prices: Dict[str, float] = {}
+        self.fno_prices: Dict[str, float] = {}
 
     def log(self, msg: str) -> None:
         self.logs.append(f"[{now_ist().strftime('%H:%M:%S')}] {msg}")
@@ -72,22 +77,49 @@ class PaperTraderEngine:
     def _run(self):
         while not self._stop.is_set():
             try:
-                ts = self.tokens.next()
-                self.active_token = ts.token
+                token_status = self.tokens.next()
+                self.active_token = token_status.token
 
-                groww = self.broker.client(ts.token)
-                resp = self.broker.get_ltp(
-                    token=ts.token,
+                groww = self.broker.client(token_status.token)
+
+                # -------- CASH LTP --------
+                cash_resp = self.broker.get_ltp(
+                    token=token_status.token,
                     segment=groww.SEGMENT_CASH,
                     symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
                 )
 
-                self.last_prices = {
-                    "NSE_NIFTY": extract_ltp(resp, "NSE_NIFTY"),
-                    "NSE_BANKNIFTY": extract_ltp(resp, "NSE_BANKNIFTY"),
+                nifty = extract_ltp(cash_resp, "NSE_NIFTY")
+                banknifty = extract_ltp(cash_resp, "NSE_BANKNIFTY")
+
+                self.cash_prices = {
+                    "NSE_NIFTY": nifty,
+                    "NSE_BANKNIFTY": banknifty,
                 }
 
-                self.log(f"LTP fetched {self.last_prices}")
+                # -------- F&O LTP (ATM OPTIONS) --------
+                nifty_atm = round(nifty / 50) * 50
+                bank_atm = round(banknifty / 100) * 100
+
+                fno_symbols = (
+                    f"NIFTY25FEB{int(nifty_atm)}CE",
+                    f"BANKNIFTY25FEB{int(bank_atm)}CE",
+                )
+
+                fno_resp = self.broker.get_ltp(
+                    token=token_status.token,
+                    segment=groww.SEGMENT_FNO,
+                    symbols=fno_symbols,
+                )
+
+                self.fno_prices = {
+                    fno_symbols[0]: extract_ltp(fno_resp, fno_symbols[0]),
+                    fno_symbols[1]: extract_ltp(fno_resp, fno_symbols[1]),
+                }
+
+                self.log(
+                    f"LTP fetched CASH={self.cash_prices} FNO={self.fno_prices}"
+                )
 
             except Exception as e:
                 self.log(f"engine error: {e}")
@@ -102,5 +134,8 @@ class PaperTraderEngine:
             unrealized_pnl=0.0,
             open_positions=[],
             logs=self.logs,
-            last_prices=self.last_prices,
+            last_prices={
+                **self.cash_prices,
+                **self.fno_prices,
+            },
         )
