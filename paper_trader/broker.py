@@ -1,48 +1,184 @@
+import streamlit as st
+import time
 from typing import Dict, List
 from growwapi import GrowwAPI
 
+# =========================
+# STREAMLIT CONFIG
+# =========================
+st.set_page_config(
+    page_title="Groww NSE Paper Trading Dashboard",
+    layout="wide"
+)
 
-class GrowwPaperBroker:
-    def __init__(self, access_token: str):
-        self.client = GrowwAPI(access_token)
+st.title("📊 Groww NSE Paper Trading Dashboard")
 
-    # ============================
-    # INDEX LTP (CASH)
-    # ============================
-    def get_index_ltp(self, symbols: List[str]) -> Dict[str, float]:
-        response = self.client.get_ltp(
-            segment="CASH",
-            exchange_trading_symbols=tuple(symbols),
+# =========================
+# SESSION STATE
+# =========================
+if "client" not in st.session_state:
+    st.session_state.client = None
+
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = 0.0
+
+if "index_ltp" not in st.session_state:
+    st.session_state.index_ltp = {}
+
+if "fno_ltp" not in st.session_state:
+    st.session_state.fno_ltp = {}
+
+if "logs" not in st.session_state:
+    st.session_state.logs = []
+
+# =========================
+# HELPERS
+# =========================
+def log(msg: str):
+    ts = time.strftime("%H:%M:%S")
+    st.session_state.logs.append(f"[{ts}] {msg}")
+    st.session_state.logs = st.session_state.logs[-50:]
+
+
+# =========================
+# SIDEBAR
+# =========================
+with st.sidebar:
+    st.header("Setup")
+
+    token = st.text_area(
+        "Paste Groww access token (1 only for now)",
+        height=120
+    )
+
+    poll_seconds = st.number_input(
+        "Poll interval (seconds)",
+        min_value=3,
+        max_value=60,
+        value=5,
+        step=1
+    )
+
+    if st.button("Initialize token"):
+        try:
+            st.session_state.client = GrowwAPI(token.strip())
+            log("token_validation => valid")
+        except Exception as e:
+            log(f"token_validation => failed: {e}")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        start = st.button("Start")
+    with col2:
+        stop = st.button("Stop")
+
+# =========================
+# BOT STATUS
+# =========================
+st.subheader("Bot status")
+if st.session_state.client:
+    st.success("Running")
+else:
+    st.warning("Not initialized")
+
+# =========================
+# AUTO REFRESH (SAFE METHOD)
+# =========================
+now = time.time()
+if now - st.session_state.last_refresh >= poll_seconds:
+    st.session_state.last_refresh = now
+    st.rerun()
+
+# =========================
+# FETCH FUNCTIONS
+# =========================
+def fetch_index_ltp(client: GrowwAPI) -> Dict[str, float]:
+    symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
+
+    resp = client.get_ltp(
+        segment="CASH",
+        exchange_trading_symbols=tuple(symbols)
+    )
+
+    out: Dict[str, float] = {}
+    for sym, data in resp.items():
+        out[sym] = float(data["last_price"])
+    return out
+
+
+def fetch_fno_monthly_ltp(client: GrowwAPI) -> Dict[str, float]:
+    symbols = [
+        "NSE_NIFTY26FEB24500CE",  # example monthly
+    ]
+
+    resp = client.get_ltp(
+        segment="FNO",
+        exchange_trading_symbols=tuple(symbols)
+    )
+
+    out: Dict[str, float] = {}
+    for sym, data in resp.items():
+        out[sym] = float(data["last_price"])
+    return out
+
+
+def fetch_fno_weekly_ltp(client: GrowwAPI) -> Dict[str, float]:
+    symbol = "NIFTY2621020400CE"  # example weekly
+
+    quote = client.get_quote(trading_symbol=symbol)
+
+    return {
+        symbol: float(quote["last_price"])
+    }
+
+# =========================
+# DATA FETCH
+# =========================
+if st.session_state.client and start:
+    try:
+        log("engine started")
+
+        # INDEX
+        st.session_state.index_ltp = fetch_index_ltp(
+            st.session_state.client
         )
+        log(f"INDEX LTP fetched {st.session_state.index_ltp}")
 
-        # Normalize response
-        return {
-            sym: float(data["last_price"])
-            for sym, data in response.items()
-        }
+        # F&O
+        fno_data = {}
+        fno_data.update(fetch_fno_monthly_ltp(st.session_state.client))
+        fno_data.update(fetch_fno_weekly_ltp(st.session_state.client))
+        st.session_state.fno_ltp = fno_data
 
-    # ============================
-    # F&O MONTHLY (MULTI SYMBOL)
-    # ============================
-    def get_fno_monthly_ltp(self, symbols: List[str]) -> Dict[str, float]:
-        response = self.client.get_ltp(
-            segment="FNO",
-            exchange_trading_symbols=tuple(symbols),
-        )
+        log(f"F&O LTP fetched {st.session_state.fno_ltp}")
 
-        return {
-            sym: float(data["last_price"])
-            for sym, data in response.items()
-        }
+    except Exception as e:
+        log(f"engine error: {e}")
 
-    # ============================
-    # F&O WEEKLY (SINGLE SYMBOL ONLY)
-    # ============================
-    def get_fno_weekly_ltp(self, symbol: str) -> Dict[str, float]:
-        quote = self.client.get_quote(
-            trading_symbol=symbol  # ✅ CORRECT PARAM NAME
-        )
+# =========================
+# UI TABLES
+# =========================
+st.subheader("📈 Live Market Prices (Index)")
+if st.session_state.index_ltp:
+    st.dataframe(
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()],
+        width="stretch"
+    )
+else:
+    st.info("Waiting for index data...")
 
-        return {
-            symbol: float(quote["last_price"])
-        }
+st.subheader("📉 Live Market Prices (F&O)")
+if st.session_state.fno_ltp:
+    st.dataframe(
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.fno_ltp.items()],
+        width="stretch"
+    )
+else:
+    st.info("Waiting for F&O data...")
+
+# =========================
+# LOGS
+# =========================
+st.subheader("Live logs (last 50)")
+for line in st.session_state.logs:
+    st.text(line)
