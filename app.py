@@ -1,140 +1,138 @@
+from __future__ import annotations
+
 import time
 import streamlit as st
 from growwapi import GrowwAPI
 
-# ===============================
+# =========================
 # PAGE CONFIG
-# ===============================
+# =========================
 st.set_page_config(
-    page_title="Groww NSE Paper Trading Dashboard",
-    layout="wide"
+    page_title="Groww Paper Trader",
+    page_icon="📈",
+    layout="wide",
 )
 
-st.title("📊 Groww NSE Paper Trading Dashboard")
+st.title("📈 Groww Paper Trading Dashboard")
+st.caption("Index + Weekly F&O LTP • Auto refresh every 5 seconds")
 
-# ===============================
-# SESSION STATE
-# ===============================
+# =========================
+# SESSION STATE INIT
+# =========================
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = 0.0
+
 if "groww" not in st.session_state:
     st.session_state.groww = None
 
-if "logs" not in st.session_state:
-    st.session_state.logs = []
+# =========================
+# SIDEBAR – TOKEN INPUT
+# =========================
+with st.sidebar:
+    st.header("🔑 Groww Token")
+    token_input = st.text_area(
+        "Paste Groww Access Token",
+        height=150,
+        placeholder="eyJraWQiOiJ...",
+    )
 
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = 0
+    weekly_symbol = st.text_input(
+        "Weekly Option Symbol",
+        value="NIFTY2621026400CE",
+        help="Example: NIFTY2621026400CE (NO NSE_ prefix)",
+    )
 
-# ===============================
-# SIDEBAR
-# ===============================
-st.sidebar.header("Setup")
+    poll_seconds = st.number_input(
+        "Refresh interval (seconds)",
+        min_value=5,
+        max_value=30,
+        value=5,
+        step=1,
+    )
 
-token = st.sidebar.text_area(
-    "Paste Groww access token (1 only)",
-    height=120
-)
+    if st.button("🚀 Initialize", width="stretch"):
+        if not token_input.strip():
+            st.error("Please paste a valid Groww token")
+        else:
+            st.session_state.groww = GrowwAPI(token_input.strip())
+            st.success("Groww API initialized successfully")
 
-poll_seconds = st.sidebar.number_input(
-    "Poll interval (seconds)",
-    min_value=3,
-    max_value=30,
-    value=5
-)
+# =========================
+# STOP IF NOT INITIALIZED
+# =========================
+if st.session_state.groww is None:
+    st.info("👈 Paste token and click Initialize")
+    st.stop()
 
-if st.sidebar.button("Initialize token"):
-    try:
-        st.session_state.groww = GrowwAPI(token.strip())
-        st.session_state.logs.append("token_validation => valid")
-    except Exception as e:
-        st.session_state.logs.append(f"token_validation => failed: {e}")
+groww = st.session_state.groww
 
-# ===============================
-# BOT STATUS
-# ===============================
-if st.session_state.groww:
-    st.success("🟢 Running")
-else:
-    st.warning("🔴 Not Initialized")
-
-# ===============================
-# AUTO REFRESH (LOCKED & SAFE)
-# ===============================
+# =========================
+# AUTO REFRESH (SAFE)
+# =========================
 now = time.time()
 if now - st.session_state.last_refresh >= poll_seconds:
     st.session_state.last_refresh = now
     st.rerun()
 
-# ===============================
-# INDEX LTP (CASH)
-# ===============================
-st.subheader("📈 Live Market Prices (Index)")
+# =========================
+# FETCH INDEX LTP (CASH)
+# =========================
+index_error = None
+index_ltp = {}
 
-if st.session_state.groww:
-    try:
-        index_ltp = st.session_state.groww.get_ltp(
-            segment=st.session_state.groww.SEGMENT_CASH,
-            exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY")
+try:
+    index_ltp = groww.get_ltp(
+        segment=groww.SEGMENT_CASH,
+        exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
+    )
+except Exception as e:
+    index_error = str(e)
+
+# =========================
+# FETCH WEEKLY OPTION LTP (F&O)
+# =========================
+weekly_error = None
+weekly_ltp = None
+
+try:
+    quote = groww.get_quote(
+        exchange=groww.EXCHANGE_NSE,
+        segment=groww.SEGMENT_FNO,
+        trading_symbol=weekly_symbol.strip(),
+    )
+    weekly_ltp = quote.get("last_price")
+except Exception as e:
+    weekly_error = str(e)
+
+# =========================
+# UI DISPLAY
+# =========================
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("📊 Index LTP")
+    if index_error:
+        st.error(index_error)
+    else:
+        st.table(
+            [
+                {"Symbol": k, "LTP": v}
+                for k, v in index_ltp.items()
+            ]
         )
 
-        st.table([
-            {"Symbol": sym, "LTP": ltp}
-            for sym, ltp in index_ltp.items()
-        ])
-
-        st.session_state.logs.append(f"INDEX LTP {index_ltp}")
-
-    except Exception as e:
-        st.error("Index fetch failed")
-        st.session_state.logs.append(f"index_error: {e}")
-
-# ===============================
-# F&O LTP (CORRECT LOGIC)
-# ===============================
-st.subheader("📉 Live Market Prices (F&O)")
-
-if st.session_state.groww:
-    try:
-        # 🔹 Monthly Option → get_ltp (supports multiple)
-        monthly_symbol = "NSE_NIFTY26FEB24500CE"
-
-        monthly_ltp = st.session_state.groww.get_ltp(
-            segment=st.session_state.groww.SEGMENT_FNO,
-            exchange_trading_symbols=monthly_symbol
+with col2:
+    st.subheader("🧾 Weekly Option LTP")
+    if weekly_error:
+        st.error(weekly_error)
+    else:
+        st.table(
+            [
+                {
+                    "Symbol": weekly_symbol,
+                    "LTP": weekly_ltp,
+                }
+            ]
         )
 
-        # 🔹 Weekly Option → get_quote (ONLY ONE SYMBOL)
-        weekly_symbol = "NIFTY2621020400CE"
-
-        weekly_quote = st.session_state.groww.get_quote(
-            st.session_state.groww.EXCHANGE_NSE,
-            st.session_state.groww.SEGMENT_FNO,
-            weekly_symbol
-        )
-
-        fno_rows = [
-            {
-                "Symbol": monthly_symbol,
-                "LTP": monthly_ltp.get(monthly_symbol)
-            },
-            {
-                "Symbol": weekly_symbol,
-                "LTP": weekly_quote.get("ltp")
-            }
-        ]
-
-        st.table(fno_rows)
-
-        st.session_state.logs.append(
-            f"FNO LTP monthly={monthly_ltp} weekly={weekly_quote.get('ltp')}"
-        )
-
-    except Exception as e:
-        st.error("F&O fetch failed")
-        st.session_state.logs.append(f"fno_error: {e}")
-
-# ===============================
-# LOGS
-# ===============================
-st.subheader("🧾 Live logs (last 50)")
-for log in st.session_state.logs[-50:]:
-    st.code(log)
+st.caption(f"⏱ Auto-refreshing every {poll_seconds} seconds")
