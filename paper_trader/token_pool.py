@@ -10,12 +10,12 @@ from paper_trader.utils import now_ist
 class TokenPool:
     def __init__(self, tokens: list[str], min_gap_seconds: int = 5) -> None:
         if not tokens:
-            raise ValueError("At least one access token is required.")
+            raise ValueError("At least one access token is required")
         if len(tokens) > 5:
-            raise ValueError("Maximum 5 access tokens are supported.")
+            raise ValueError("Maximum 5 access tokens are supported")
         self._statuses = [TokenStatus(token=t.strip()) for t in tokens if t.strip()]
         if not self._statuses:
-            raise ValueError("Token file does not contain valid tokens.")
+            raise ValueError("Token file has no usable token")
         self._min_gap = timedelta(seconds=min_gap_seconds)
         self._cursor = 0
         self._lock = Lock()
@@ -26,19 +26,20 @@ class TokenPool:
 
     def mark_failed(self, token: str, error: str) -> None:
         with self._lock:
-            for status in self._statuses:
-                if status.token == token:
-                    status.active = False
-                    status.last_error = error
-                    break
+            for s in self._statuses:
+                if s.token == token:
+                    s.active = False
+                    s.last_error = error
+                    return
 
     def choose_next(self) -> TokenStatus:
         with self._lock:
-            if not any(s.active for s in self._statuses):
-                raise RuntimeError("All tokens are inactive.")
+            active = [s for s in self._statuses if s.active]
+            if not active:
+                raise RuntimeError("All tokens inactive")
 
             attempts = 0
-            while attempts < len(self._statuses) * 2:
+            while attempts < len(self._statuses):
                 status = self._statuses[self._cursor]
                 self._cursor = (self._cursor + 1) % len(self._statuses)
                 attempts += 1
@@ -51,11 +52,4 @@ class TokenPool:
                 status.calls_made += 1
                 return TokenStatus(**vars(status))
 
-            # If all active tokens are cooling down, pick next active token anyway to avoid deadlock.
-            for status in self._statuses:
-                if status.active:
-                    status.last_used_at = now_ist()
-                    status.calls_made += 1
-                    return TokenStatus(**vars(status))
-
-        raise RuntimeError("No token available.")
+            raise RuntimeError("All active tokens are in cooldown")

@@ -6,79 +6,72 @@ from paper_trader.models import TokenStatus
 
 
 class GrowwPaperBroker:
-    """Thin adapter over GrowwAPI for paper-trading data calls only."""
+    """Strict GrowwAPI adapter (paper-data only, no order methods)."""
 
     def __init__(self) -> None:
-        from growwapi import GrowwAPI  # strict requirement
+        from growwapi import GrowwAPI
 
         self._sdk = GrowwAPI
 
-    def _client(self, token: str) -> Any:
+    def client(self, token: str) -> Any:
         return self._sdk(token)
 
     def validate_token(self, token_status: TokenStatus) -> tuple[bool, str]:
+        """Classify token as usable / forbidden / expired-ish from SDK response."""
         try:
-            client = self._client(token_status.token)
-            client.get_ltp(
-                segment=client.SEGMENT_CASH,
-                exchange_trading_symbols=("NSE_NIFTY",),
-            )
-            return True, "valid"
-        except Exception as exc:  # noqa: BLE001 - pass SDK message to UI
-            return False, str(exc)
+            groww = self.client(token_status.token)
+            groww.get_ltp(groww.SEGMENT_CASH, ("NSE_NIFTY",))
+            return True, "usable"
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            if "forbidden" in msg or "403" in msg or "permission" in msg:
+                return False, "forbidden_market_data"
+            if "expired" in msg or "token" in msg or "unauthorized" in msg or "401" in msg:
+                return False, "expired_or_invalid"
+            return False, f"error:{str(exc)}"
 
-    def get_ltp(
-        self,
-        token: str,
-        segment: Any,
-        exchange_trading_symbols: tuple[str, ...],
-    ) -> Any:
-        client = self._client(token)
-        return client.get_ltp(segment=segment, exchange_trading_symbols=exchange_trading_symbols)
+    def get_ltp(self, token: str, segment: Any, symbols: tuple[str, ...]) -> Any:
+        groww = self.client(token)
+        return groww.get_ltp(segment, symbols)
 
-    def get_quote(self, token: str, exchange_trading_symbol: str) -> Any:
-        client = self._client(token)
-        return client.get_quote(exchange_trading_symbol=exchange_trading_symbol)
+    def get_quote(self, token: str, symbol: str) -> Any:
+        groww = self.client(token)
+        return groww.get_quote(symbol)
 
-    def get_ohlc(self, token: str, exchange_trading_symbol: str) -> Any:
-        client = self._client(token)
-        return client.get_ohlc(exchange_trading_symbol=exchange_trading_symbol)
+    def get_ohlc(self, token: str, symbol: str) -> Any:
+        groww = self.client(token)
+        return groww.get_ohlc(symbol)
 
-    def get_option_chain(self, token: str, exchange_trading_symbol: str, expiry: str) -> Any:
-        client = self._client(token)
-        return client.get_option_chain(exchange_trading_symbol=exchange_trading_symbol, expiry=expiry)
+    def get_greeks(self, token: str, symbol: str) -> Any:
+        groww = self.client(token)
+        return groww.get_greeks(symbol)
 
-    def get_greeks(self, token: str, exchange_trading_symbol: str) -> Any:
-        client = self._client(token)
-        return client.get_greeks(exchange_trading_symbol=exchange_trading_symbol)
+    def get_option_chain(self, token: str, exchange: Any, underlying: str, expiry_date: str) -> Any:
+        groww = self.client(token)
+        return groww.get_option_chain(exchange, underlying, expiry_date)
 
-    def get_contracts(self, token: str, exchange_trading_symbol: str, expiry: str) -> Any:
-        client = self._client(token)
-        return client.get_contracts(exchange_trading_symbol=exchange_trading_symbol, expiry=expiry)
+    def get_contracts(self, token: str, underlying: str, expiry_date: str) -> Any:
+        groww = self.client(token)
+        return groww.get_contracts(underlying, expiry_date)
 
     def get_instrument_by_groww_symbol(self, token: str, groww_symbol: str) -> Any:
-        client = self._client(token)
-        return client.get_instrument_by_groww_symbol(groww_symbol)
+        groww = self.client(token)
+        return groww.get_instrument_by_groww_symbol(groww_symbol)
 
-    def get_instrument_by_exchange_and_trading_symbol(
-        self,
-        token: str,
-        exchange: str,
-        trading_symbol: str,
-    ) -> Any:
-        client = self._client(token)
-        return client.get_instrument_by_exchange_and_trading_symbol(exchange, trading_symbol)
+    def get_instrument_by_exchange_and_trading_symbol(self, token: str, exchange: str, trading_symbol: str) -> Any:
+        groww = self.client(token)
+        return groww.get_instrument_by_exchange_and_trading_symbol(exchange, trading_symbol)
 
     def get_instrument_by_exchange_token(self, token: str, exchange: str, exchange_token: str) -> Any:
-        client = self._client(token)
-        return client.get_instrument_by_exchange_token(exchange, exchange_token)
+        groww = self.client(token)
+        return groww.get_instrument_by_exchange_token(exchange, exchange_token)
 
-    def load_instruments_csv(self, token: str) -> Any:
-        client = self._client(token)
-        if hasattr(client, "_load_instruments"):
-            return client._load_instruments()  # noqa: SLF001 - explicitly requested fallback
-        raise RuntimeError("GrowwAPI._load_instruments() is unavailable in this SDK version.")
+    def load_instruments(self, token: str) -> Any:
+        groww = self.client(token)
+        if hasattr(groww, "_load_instruments"):
+            return groww._load_instruments()  # noqa: SLF001
+        raise RuntimeError("Groww SDK does not expose _load_instruments in this runtime")
 
     def instrument_csv_url(self, token: str) -> str:
-        client = self._client(token)
-        return str(client.INSTRUMENT_CSV_URL)
+        groww = self.client(token)
+        return str(groww.INSTRUMENT_CSV_URL)
