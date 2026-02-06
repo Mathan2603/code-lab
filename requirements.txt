@@ -1,0 +1,4 @@
+streamlit
+growwapi
+pyotp
+pandas
