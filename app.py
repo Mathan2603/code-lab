@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import streamlit as st
-from typing import Dict, List
+from typing import Dict
 
 from paper_trader.broker import GrowwPaperBroker
 
@@ -28,8 +28,8 @@ if "running" not in st.session_state:
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
-if "ltp_cash" not in st.session_state:
-    st.session_state.ltp_cash: Dict[str, float] = {}
+if "ltp_index" not in st.session_state:
+    st.session_state.ltp_index: Dict[str, float] = {}
 
 if "ltp_fno" not in st.session_state:
     st.session_state.ltp_fno: Dict[str, float] = {}
@@ -53,11 +53,11 @@ with st.sidebar:
     )
 
     if st.button("Initialize token"):
-        if token:
+        if not token:
+            st.error("Token required")
+        else:
             st.session_state.broker = GrowwPaperBroker(token)
             st.session_state.logs.append("token_validation => valid")
-        else:
-            st.error("Token required")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -77,64 +77,77 @@ st.subheader("Bot status")
 st.markdown("🟢 Running" if st.session_state.running else "🔴 Stopped")
 
 # ============================
-# MAIN LOOP (SAFE STREAMLIT WAY)
+# MAIN LOOP (REFRESH LOCKED)
 # ============================
 if st.session_state.running and st.session_state.broker:
 
     try:
-        # ----------------------------
-        # CASH / INDEX LTP
-        # ----------------------------
-        cash_symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
-        cash_ltp = st.session_state.broker.get_index_ltp(cash_symbols)
-        st.session_state.ltp_cash = cash_ltp
+        broker = st.session_state.broker
 
         # ----------------------------
-        # F&O MONTHLY (MULTI)
+        # INDEX LTP (CASH)
         # ----------------------------
-        monthly_fno_symbols = [
+        index_symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
+
+        index_ltp = broker.get_index_ltp(index_symbols)
+
+        # ✅ FORCE DICT NORMALIZATION
+        if isinstance(index_ltp, dict):
+            st.session_state.ltp_index = index_ltp
+        else:
+            raise ValueError(f"Index LTP invalid type: {type(index_ltp)}")
+
+        # ----------------------------
+        # F&O MONTHLY (MULTI SYMBOL)
+        # ----------------------------
+        monthly_symbols = [
             "NSE_NIFTY26FEB24500CE",
             "NSE_NIFTY26FEB24600CE",
         ]
 
-        monthly_ltp = st.session_state.broker.get_fno_monthly_ltp(
-            monthly_fno_symbols
-        )
+        monthly_ltp = broker.get_fno_monthly_ltp(monthly_symbols)
+
+        if not isinstance(monthly_ltp, dict):
+            raise ValueError("Monthly FNO LTP must return dict")
 
         # ----------------------------
-        # F&O WEEKLY (SINGLE ONLY)
+        # F&O WEEKLY (SINGLE SYMBOL ONLY)
         # ----------------------------
         weekly_symbol = "NIFTY2621020400CE"
-        weekly_ltp = st.session_state.broker.get_fno_weekly_ltp(
-            weekly_symbol
-        )
 
-        # MERGE FNO DATA
-        fno_ltp = {}
+        weekly_ltp = broker.get_fno_weekly_ltp(weekly_symbol)
+
+        if not isinstance(weekly_ltp, dict):
+            raise ValueError("Weekly FNO LTP must return dict")
+
+        # ----------------------------
+        # MERGE F&O DATA
+        # ----------------------------
+        fno_ltp: Dict[str, float] = {}
         fno_ltp.update(monthly_ltp)
         fno_ltp.update(weekly_ltp)
 
         st.session_state.ltp_fno = fno_ltp
 
         st.session_state.logs.append(
-            f"LTP fetched CASH={cash_ltp} FNO={fno_ltp}"
+            f"LTP fetched | INDEX={st.session_state.ltp_index} | FNO={st.session_state.ltp_fno}"
         )
 
     except Exception as e:
         st.session_state.logs.append(f"engine error: {e}")
 
-    # ⏱️ THIS IS THE REFRESH MECHANISM
+    # 🔒 REFRESH (DO NOT TOUCH)
     time.sleep(poll_seconds)
     st.rerun()
 
 # ============================
-# DISPLAY CASH LTP
+# DISPLAY INDEX LTP
 # ============================
 st.subheader("📊 Live Market Prices (Index)")
 
-if st.session_state.ltp_cash:
+if st.session_state.ltp_index:
     st.table(
-        [{"Symbol": k, "LTP": v} for k, v in st.session_state.ltp_cash.items()]
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.ltp_index.items()]
     )
 else:
     st.info("Waiting for index data...")
