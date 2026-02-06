@@ -1,11 +1,10 @@
 import streamlit as st
 import time
-from typing import Dict
 from growwapi import GrowwAPI
 
-# =============================
+# =========================
 # PAGE CONFIG
-# =============================
+# =========================
 st.set_page_config(
     page_title="Groww NSE Paper Trading Dashboard",
     layout="wide"
@@ -13,11 +12,14 @@ st.set_page_config(
 
 st.title("📊 Groww NSE Paper Trading Dashboard")
 
-# =============================
-# SESSION STATE
-# =============================
+# =========================
+# SESSION STATE INIT
+# =========================
 if "client" not in st.session_state:
     st.session_state.client = None
+
+if "running" not in st.session_state:
+    st.session_state.running = False
 
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = 0.0
@@ -31,17 +33,17 @@ if "fno_ltp" not in st.session_state:
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
-# =============================
-# LOG FUNCTION
-# =============================
+# =========================
+# LOG HELPER
+# =========================
 def log(msg: str):
     ts = time.strftime("%H:%M:%S")
     st.session_state.logs.append(f"[{ts}] {msg}")
     st.session_state.logs = st.session_state.logs[-50:]
 
-# =============================
+# =========================
 # SIDEBAR
-# =============================
+# =========================
 with st.sidebar:
     st.header("Setup")
 
@@ -64,82 +66,79 @@ with st.sidebar:
         except Exception as e:
             log(f"token_validation => failed: {e}")
 
-    start = st.button("Start")
+    col1, col2 = st.columns(2)
 
-# =============================
+    with col1:
+        if st.button("Start"):
+            st.session_state.running = True
+            log("engine started")
+
+    with col2:
+        if st.button("Stop"):
+            st.session_state.running = False
+            log("engine stopped")
+
+# =========================
 # BOT STATUS
-# =============================
+# =========================
 st.subheader("Bot status")
-if st.session_state.client:
+if st.session_state.running:
     st.success("🟢 Running")
 else:
-    st.warning("🔴 Not initialized")
+    st.warning("🔴 Stopped")
 
-# =============================
+# =========================
 # AUTO REFRESH (SAFE)
-# =============================
+# =========================
 now = time.time()
 if now - st.session_state.last_refresh >= poll_seconds:
     st.session_state.last_refresh = now
     st.rerun()
 
-# =============================
-# FETCH FUNCTIONS
-# =============================
-def fetch_index_ltp(client: GrowwAPI) -> Dict[str, float]:
-    symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
-
+# =========================
+# FETCH INDEX LTP
+# =========================
+def fetch_index_ltp(client):
     resp = client.get_ltp(
         segment="CASH",
-        exchange_trading_symbols=tuple(symbols)
+        exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY")
     )
-
-    out = {}
-    for sym, data in resp.items():
-        out[sym] = float(data["last_price"])
-    return out
-
-
-def fetch_fno_monthly_ltp(client: GrowwAPI) -> Dict[str, float]:
-    symbols = [
-        "NSE_NIFTY26FEB24500CE"  # example
-    ]
-
-    resp = client.get_ltp(
-        segment="FNO",
-        exchange_trading_symbols=tuple(symbols)
-    )
-
-    out = {}
-    for sym, data in resp.items():
-        out[sym] = float(data["last_price"])
-    return out
-
-
-def fetch_fno_weekly_ltp(client: GrowwAPI) -> Dict[str, float]:
-    symbol = "NIFTY2621020400CE"
-
-    quote = client.get_quote(trading_symbol=symbol)
-
     return {
-        symbol: float(quote["last_price"])
+        k: float(v["last_price"])
+        for k, v in resp.items()
     }
 
-# =============================
-# FETCH DATA
-# =============================
-if st.session_state.client and start:
-    try:
-        log("engine started")
+# =========================
+# FETCH F&O MONTHLY
+# =========================
+def fetch_fno_monthly(client):
+    resp = client.get_ltp(
+        segment="FNO",
+        exchange_trading_symbols=("NSE_NIFTY26FEB24500CE",)
+    )
+    return {
+        k: float(v["last_price"])
+        for k, v in resp.items()
+    }
 
-        st.session_state.index_ltp = fetch_index_ltp(
-            st.session_state.client
-        )
+# =========================
+# FETCH F&O WEEKLY
+# =========================
+def fetch_fno_weekly(client):
+    q = client.get_quote(trading_symbol="NIFTY2621020400CE")
+    return {"NIFTY2621020400CE": float(q["last_price"])}
+
+# =========================
+# ENGINE LOOP (SAFE)
+# =========================
+if st.session_state.running and st.session_state.client:
+    try:
+        st.session_state.index_ltp = fetch_index_ltp(st.session_state.client)
         log(f"INDEX LTP fetched {st.session_state.index_ltp}")
 
         fno = {}
-        fno.update(fetch_fno_monthly_ltp(st.session_state.client))
-        fno.update(fetch_fno_weekly_ltp(st.session_state.client))
+        fno.update(fetch_fno_monthly(st.session_state.client))
+        fno.update(fetch_fno_weekly(st.session_state.client))
         st.session_state.fno_ltp = fno
 
         log(f"F&O LTP fetched {st.session_state.fno_ltp}")
@@ -147,9 +146,9 @@ if st.session_state.client and start:
     except Exception as e:
         log(f"engine error: {e}")
 
-# =============================
+# =========================
 # UI TABLES
-# =============================
+# =========================
 st.subheader("📈 Live Market Prices (Index)")
 if st.session_state.index_ltp:
     st.dataframe(
@@ -168,9 +167,9 @@ if st.session_state.fno_ltp:
 else:
     st.info("Waiting for F&O data...")
 
-# =============================
+# =========================
 # LOGS
-# =============================
+# =========================
 st.subheader("Live logs (last 50)")
-for line in st.session_state.logs:
-    st.text(line)
+for l in st.session_state.logs:
+    st.text(l)
