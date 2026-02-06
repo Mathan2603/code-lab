@@ -1,37 +1,59 @@
 from __future__ import annotations
-from typing import Any
-from growwapi import GrowwAPI
+from typing import Dict, List
+
+from growwapi import Client
 
 
 class GrowwPaperBroker:
-    """
-    Thin wrapper over GrowwAPI.
-    IMPORTANT:
-    - Always pass symbols as tuple
-    - get_ltp may return float or dict → handled upstream
-    """
+    def __init__(self, token: str):
+        self.client = Client(token)
 
-    def __init__(self) -> None:
-        self._sdk = GrowwAPI
-
-    def client(self, token: str) -> GrowwAPI:
-        return self._sdk(token)
-
-    def validate_token(self, token: str) -> None:
-        groww = self.client(token)
-        groww.get_ltp(
-            segment=groww.SEGMENT_CASH,
-            exchange_trading_symbols=("NSE_NIFTY",),
+    # ===============================
+    # CASH / INDEX LTP
+    # ===============================
+    def get_index_ltp(self, symbols: List[str]) -> Dict[str, float]:
+        """
+        Example symbols:
+        NSE_NIFTY
+        NSE_BANKNIFTY
+        """
+        response = self.client.get_ltp(
+            segment=self.client.SEGMENT_CASH,
+            exchange_trading_symbols=tuple(symbols),
         )
 
-    def get_ltp(
-        self,
-        token: str,
-        segment: Any,
-        symbols: tuple[str, ...],
-    ) -> Any:
-        groww = self.client(token)
-        return groww.get_ltp(
-            segment=segment,
-            exchange_trading_symbols=symbols,
+        return {item["symbol"]: float(item["ltp"]) for item in response}
+
+    # ===============================
+    # F&O MONTHLY OPTIONS (BATCH)
+    # ===============================
+    def get_monthly_option_ltp(self, symbols: List[str]) -> Dict[str, float]:
+        """
+        Example:
+        NSE_NIFTY26FEB24500CE
+        Supports up to 50 symbols
+        """
+        response = self.client.get_ltp(
+            segment=self.client.SEGMENT_FNO,
+            exchange_trading_symbols=tuple(symbols),
         )
+
+        return {item["symbol"]: float(item["ltp"]) for item in response}
+
+    # ===============================
+    # F&O WEEKLY OPTIONS (SINGLE)
+    # ===============================
+    def get_weekly_option_ltp(self, symbol: str) -> float:
+        """
+        Example:
+        NIFTY2621020400CE
+
+        Groww restriction:
+        - Only ONE weekly symbol per request
+        - Must use get_quote or get_ohlc
+        """
+        quote = self.client.get_quote(
+            segment=self.client.SEGMENT_FNO,
+            exchange_trading_symbol=symbol,
+        )
+        return float(quote["ltp"])
