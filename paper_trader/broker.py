@@ -1,38 +1,33 @@
 from __future__ import annotations
-from typing import List, Dict
+from typing import Any, Tuple
+
+from paper_trader.models import TokenStatus
 
 
 class GrowwPaperBroker:
-    """Groww API adapter – paper trading only"""
-
     def __init__(self) -> None:
         from growwapi import GrowwAPI
-        self._GrowwAPI = GrowwAPI
+        self._client_cls = GrowwAPI
 
-    def client(self, token: str):
-        return self._GrowwAPI(token)
+    def _client(self, token: str):
+        return self._client_cls(token)
 
-    # -------------------------------
-    # TOKEN VALIDATION
-    # -------------------------------
-    def validate_token(self, token: str) -> tuple[bool, str]:
+    def validate_token(self, status: TokenStatus) -> Tuple[bool, str]:
+        """
+        IMPORTANT:
+        - NEVER return TokenStatus
+        - ONLY return (bool, str)
+        """
         try:
-            groww = self.client(token)
+            client = self._client(status.token)
 
-            # Correct Groww call
-            groww.get_ltp(
-                segment="CASH",
-                symbols=["NSE_NIFTY"]
+            # minimal safe validation call
+            client.get_ltp(
+                segment=client.SEGMENT_CASH,
+                exchange_trading_symbols=("NSE_NIFTY",),
             )
 
             return True, "valid"
 
-        except Exception as e:
-            return False, str(e)
-
-    # -------------------------------
-    # MARKET DATA
-    # -------------------------------
-    def get_ltp(self, token: str, segment: str, symbols: List[str]) -> Dict:
-        groww = self.client(token)
-        return groww.get_ltp(segment=segment, symbols=symbols)
+        except Exception as exc:
+            return False, str(exc)
