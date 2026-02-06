@@ -5,7 +5,6 @@ import streamlit as st
 from typing import Dict
 
 from paper_trader.broker import GrowwPaperBroker
-from paper_trader.utils import log
 
 # ============================
 # PAGE CONFIG
@@ -56,7 +55,7 @@ with st.sidebar:
     if st.button("Initialize token"):
         if token:
             st.session_state.broker = GrowwPaperBroker(token)
-            st.session_state.logs.append(log("token_validation => valid"))
+            st.session_state.logs.append("token_validation => valid")
         else:
             st.error("Token required")
 
@@ -64,50 +63,39 @@ with st.sidebar:
     with col1:
         if st.button("Start"):
             st.session_state.running = True
-            st.session_state.logs.append(log("engine started"))
+            st.session_state.logs.append("engine started")
 
     with col2:
         if st.button("Stop"):
             st.session_state.running = False
-            st.session_state.logs.append(log("engine stopped"))
+            st.session_state.logs.append("engine stopped")
 
 # ============================
 # BOT STATUS
 # ============================
 st.subheader("Bot status")
-status = "🟢 Running" if st.session_state.running else "🔴 Stopped"
-st.markdown(f"**{status}**")
+st.markdown("🟢 Running" if st.session_state.running else "🔴 Stopped")
 
 # ============================
-# POLLING LOGIC
+# POLLING LOOP
 # ============================
 if st.session_state.running and st.session_state.broker:
     now = time.time()
-
     if now - st.session_state.last_poll >= poll_seconds:
         st.session_state.last_poll = now
 
         try:
-            symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
+            index_symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
+            ltp = st.session_state.broker.get_index_ltp(index_symbols)
 
-            raw_ltp = st.session_state.broker.get_index_ltp(symbols)
-
-            # 🔒 NORMALIZE RESPONSE
-            if isinstance(raw_ltp, float):
-                ltp_data = {symbols[0]: raw_ltp}
-            elif isinstance(raw_ltp, dict):
-                ltp_data = raw_ltp
-            else:
-                raise ValueError(f"Unexpected LTP type: {type(raw_ltp)}")
-
-            st.session_state.ltp_data = ltp_data
-            st.session_state.logs.append(log(f"LTP fetched {ltp_data}"))
+            st.session_state.ltp_data = ltp
+            st.session_state.logs.append(f"LTP fetched {ltp}")
 
         except Exception as e:
-            st.session_state.logs.append(log(f"engine error: {e}"))
+            st.session_state.logs.append(f"engine error: {e}")
 
 # ============================
-# LTP TABLE
+# LTP DISPLAY
 # ============================
 st.subheader("📊 Live Market Prices (LTP)")
 
@@ -122,6 +110,5 @@ else:
 # LOGS
 # ============================
 st.subheader("Live logs (last 50)")
-
 for line in st.session_state.logs[-50:]:
     st.code(line)
