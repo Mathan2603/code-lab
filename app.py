@@ -5,36 +5,25 @@ from growwapi import GrowwAPI
 # =========================
 # PAGE CONFIG
 # =========================
-st.set_page_config(
-    page_title="Groww NSE Paper Trading Dashboard",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Groww NSE Paper Trading Dashboard", layout="wide")
 st.title("📊 Groww NSE Paper Trading Dashboard")
 
 # =========================
-# SESSION STATE INIT
+# SESSION STATE
 # =========================
-if "client" not in st.session_state:
-    st.session_state.client = None
-
-if "running" not in st.session_state:
-    st.session_state.running = False
-
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = 0.0
-
-if "index_ltp" not in st.session_state:
-    st.session_state.index_ltp = {}
-
-if "fno_ltp" not in st.session_state:
-    st.session_state.fno_ltp = {}
-
-if "logs" not in st.session_state:
-    st.session_state.logs = []
+for k, v in {
+    "client": None,
+    "running": False,
+    "last_refresh": 0.0,
+    "index_ltp": {},
+    "fno_ltp": {},
+    "logs": [],
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # =========================
-# LOG HELPER
+# LOG
 # =========================
 def log(msg: str):
     ts = time.strftime("%H:%M:%S")
@@ -47,17 +36,9 @@ def log(msg: str):
 with st.sidebar:
     st.header("Setup")
 
-    token = st.text_area(
-        "Paste Groww access token (1 only)",
-        height=120
-    )
+    token = st.text_area("Paste Groww access token (1 only)", height=120)
 
-    poll_seconds = st.number_input(
-        "Poll interval (seconds)",
-        min_value=3,
-        max_value=60,
-        value=5
-    )
+    poll_seconds = st.number_input("Poll interval (seconds)", 3, 60, 5)
 
     if st.button("Initialize token"):
         try:
@@ -66,26 +47,19 @@ with st.sidebar:
         except Exception as e:
             log(f"token_validation => failed: {e}")
 
-    col1, col2 = st.columns(2)
+    if st.button("Start"):
+        st.session_state.running = True
+        log("engine started")
 
-    with col1:
-        if st.button("Start"):
-            st.session_state.running = True
-            log("engine started")
-
-    with col2:
-        if st.button("Stop"):
-            st.session_state.running = False
-            log("engine stopped")
+    if st.button("Stop"):
+        st.session_state.running = False
+        log("engine stopped")
 
 # =========================
-# BOT STATUS
+# STATUS
 # =========================
 st.subheader("Bot status")
-if st.session_state.running:
-    st.success("🟢 Running")
-else:
-    st.warning("🔴 Stopped")
+st.success("🟢 Running") if st.session_state.running else st.warning("🔴 Stopped")
 
 # =========================
 # AUTO REFRESH (SAFE)
@@ -96,52 +70,55 @@ if now - st.session_state.last_refresh >= poll_seconds:
     st.rerun()
 
 # =========================
-# FETCH INDEX LTP
+# NORMALIZE PRICE
 # =========================
-def fetch_index_ltp(client):
-    resp = client.get_ltp(
+def extract_price(obj):
+    if isinstance(obj, dict):
+        return float(obj.get("last_price", 0))
+    if isinstance(obj, (int, float)):
+        return float(obj)
+    return 0.0
+
+# =========================
+# FETCH INDEX
+# =========================
+def fetch_index(client):
+    data = client.get_ltp(
         segment="CASH",
         exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY")
     )
-    return {
-        k: float(v["last_price"])
-        for k, v in resp.items()
-    }
+    return {k: extract_price(v) for k, v in data.items()}
 
 # =========================
-# FETCH F&O MONTHLY
+# FETCH F&O
 # =========================
-def fetch_fno_monthly(client):
-    resp = client.get_ltp(
+def fetch_fno(client):
+    result = {}
+
+    # Monthly (multi allowed)
+    monthly = client.get_ltp(
         segment="FNO",
         exchange_trading_symbols=("NSE_NIFTY26FEB24500CE",)
     )
-    return {
-        k: float(v["last_price"])
-        for k, v in resp.items()
-    }
+    for k, v in monthly.items():
+        result[k] = extract_price(v)
+
+    # Weekly (ONLY SINGLE)
+    weekly = client.get_quote(trading_symbol="NIFTY2621020400CE")
+    result["NIFTY2621020400CE"] = extract_price(weekly)
+
+    return result
 
 # =========================
-# FETCH F&O WEEKLY
-# =========================
-def fetch_fno_weekly(client):
-    q = client.get_quote(trading_symbol="NIFTY2621020400CE")
-    return {"NIFTY2621020400CE": float(q["last_price"])}
-
-# =========================
-# ENGINE LOOP (SAFE)
+# ENGINE
 # =========================
 if st.session_state.running and st.session_state.client:
     try:
-        st.session_state.index_ltp = fetch_index_ltp(st.session_state.client)
-        log(f"INDEX LTP fetched {st.session_state.index_ltp}")
+        st.session_state.index_ltp = fetch_index(st.session_state.client)
+        log(f"INDEX LTP {st.session_state.index_ltp}")
 
-        fno = {}
-        fno.update(fetch_fno_monthly(st.session_state.client))
-        fno.update(fetch_fno_weekly(st.session_state.client))
-        st.session_state.fno_ltp = fno
-
-        log(f"F&O LTP fetched {st.session_state.fno_ltp}")
+        st.session_state.fno_ltp = fetch_fno(st.session_state.client)
+        log(f"F&O LTP {st.session_state.fno_ltp}")
 
     except Exception as e:
         log(f"engine error: {e}")
