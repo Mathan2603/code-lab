@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import streamlit as st
-from typing import List, Dict
+from typing import Dict
 
 from paper_trader.broker import GrowwPaperBroker
 from paper_trader.utils import log
@@ -18,22 +18,22 @@ st.set_page_config(
 st.title("📈 Groww NSE Paper Trading Dashboard")
 
 # ============================
-# SESSION STATE DEFAULTS
+# SESSION STATE
 # ============================
+if "broker" not in st.session_state:
+    st.session_state.broker = None
+
 if "running" not in st.session_state:
     st.session_state.running = False
-
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = 0.0
 
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
 if "ltp_data" not in st.session_state:
-    st.session_state.ltp_data = {}
+    st.session_state.ltp_data: Dict[str, float] = {}
 
-if "broker" not in st.session_state:
-    st.session_state.broker = None
+if "last_poll" not in st.session_state:
+    st.session_state.last_poll = 0.0
 
 # ============================
 # SIDEBAR
@@ -41,10 +41,10 @@ if "broker" not in st.session_state:
 with st.sidebar:
     st.header("Setup")
 
-    token_text = st.text_area(
+    token = st.text_area(
         "Paste Groww access token (1 only for now)",
         height=120,
-    )
+    ).strip()
 
     poll_seconds = st.number_input(
         "Poll interval (seconds)",
@@ -54,7 +54,6 @@ with st.sidebar:
     )
 
     if st.button("Initialize token"):
-        token = token_text.strip()
         if token:
             st.session_state.broker = GrowwPaperBroker(token)
             st.session_state.logs.append(log("token_validation => valid"))
@@ -76,32 +75,36 @@ with st.sidebar:
 # BOT STATUS
 # ============================
 st.subheader("Bot status")
-
-status_color = "🟢" if st.session_state.running else "🔴"
-st.write(f"{status_color} **{'Running' if st.session_state.running else 'Stopped'}**")
+status = "🟢 Running" if st.session_state.running else "🔴 Stopped"
+st.markdown(f"**{status}**")
 
 # ============================
-# FETCH LTP (INDEX)
+# POLLING LOGIC
 # ============================
 if st.session_state.running and st.session_state.broker:
     now = time.time()
-    if now - st.session_state.last_refresh >= poll_seconds:
-        st.session_state.last_refresh = now
+
+    if now - st.session_state.last_poll >= poll_seconds:
+        st.session_state.last_poll = now
 
         try:
-            ltp = st.session_state.broker.get_index_ltp(
-                ["NSE_NIFTY", "NSE_BANKNIFTY"]
-            )
+            symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
 
-            st.session_state.ltp_data = ltp
-            st.session_state.logs.append(
-                log(f"LTP fetched {ltp}")
-            )
+            raw_ltp = st.session_state.broker.get_index_ltp(symbols)
+
+            # 🔒 NORMALIZE RESPONSE
+            if isinstance(raw_ltp, float):
+                ltp_data = {symbols[0]: raw_ltp}
+            elif isinstance(raw_ltp, dict):
+                ltp_data = raw_ltp
+            else:
+                raise ValueError(f"Unexpected LTP type: {type(raw_ltp)}")
+
+            st.session_state.ltp_data = ltp_data
+            st.session_state.logs.append(log(f"LTP fetched {ltp_data}"))
 
         except Exception as e:
-            st.session_state.logs.append(
-                log(f"engine error: {e}")
-            )
+            st.session_state.logs.append(log(f"engine error: {e}"))
 
 # ============================
 # LTP TABLE
@@ -110,10 +113,7 @@ st.subheader("📊 Live Market Prices (LTP)")
 
 if st.session_state.ltp_data:
     st.table(
-        [
-            {"Symbol": k, "LTP": v}
-            for k, v in st.session_state.ltp_data.items()
-        ]
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.ltp_data.items()]
     )
 else:
     st.info("Waiting for market data...")
