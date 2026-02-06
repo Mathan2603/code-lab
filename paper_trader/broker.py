@@ -1,13 +1,14 @@
-from typing import Dict, List, Union
-from growwapi import Client
+from typing import Dict, List
+from growwapi import GrowwAPI
 
 
 class GrowwPaperBroker:
     def __init__(self, token: str):
-        self.client = Client(token)
+        # Correct Groww SDK usage
+        self.client = GrowwAPI(token)
 
     # ============================
-    # INDEX LTP (SAFE)
+    # INDEX LTP (CASH SEGMENT)
     # ============================
     def get_index_ltp(self, symbols: List[str]) -> Dict[str, float]:
         """
@@ -18,7 +19,7 @@ class GrowwPaperBroker:
             exchange_trading_symbols=tuple(symbols),
         )
 
-        # Groww quirk handling
+        # Groww returns float for single symbol
         if isinstance(response, float):
             return {symbols[0]: response}
 
@@ -28,12 +29,9 @@ class GrowwPaperBroker:
         raise TypeError(f"Unexpected LTP response type: {type(response)}")
 
     # ============================
-    # F&O MONTHLY LTP (SAFE)
+    # F&O MONTHLY OPTIONS (MULTI – UP TO 50)
     # ============================
     def get_fno_monthly_ltp(self, symbols: List[str]) -> Dict[str, float]:
-        """
-        Supports up to 50 symbols
-        """
         response = self.client.get_ltp(
             segment=self.client.SEGMENT_FNO,
             exchange_trading_symbols=tuple(symbols),
@@ -48,19 +46,15 @@ class GrowwPaperBroker:
         raise TypeError(f"Unexpected FNO LTP response type: {type(response)}")
 
     # ============================
-    # F&O WEEKLY LTP (SAFE – SINGLE ONLY)
+    # F&O WEEKLY OPTIONS (SINGLE ONLY)
     # ============================
     def get_fno_weekly_ltp(self, symbol: str) -> Dict[str, float]:
-        """
-        Weekly options do NOT work with get_ltp
-        Uses get_quote (single symbol only)
-        """
         quote = self.client.get_quote(
             segment=self.client.SEGMENT_FNO,
             exchange_trading_symbol=symbol,
         )
 
-        if not quote or "last_price" not in quote:
+        if not isinstance(quote, dict) or "last_price" not in quote:
             raise ValueError("Invalid weekly quote response")
 
         return {symbol: float(quote["last_price"])}
