@@ -1,7 +1,5 @@
-import streamlit as st
 import time
-from typing import Dict, List
-
+import streamlit as st
 from growwapi import GrowwAPI
 
 # =========================
@@ -9,8 +7,10 @@ from growwapi import GrowwAPI
 # =========================
 st.set_page_config(
     page_title="Groww NSE Paper Trading Dashboard",
-    layout="wide",
+    layout="wide"
 )
+
+st.title("📊 Groww NSE Paper Trading Dashboard")
 
 # =========================
 # SESSION STATE
@@ -18,168 +18,117 @@ st.set_page_config(
 if "groww" not in st.session_state:
     st.session_state.groww = None
 
-if "running" not in st.session_state:
-    st.session_state.running = False
-
 if "logs" not in st.session_state:
-    st.session_state.logs: List[str] = []
+    st.session_state.logs = []
 
-if "index_ltp" not in st.session_state:
-    st.session_state.index_ltp: Dict[str, float] = {}
-
-if "fno_ltp" not in st.session_state:
-    st.session_state.fno_ltp: Dict[str, float] = {}
-
-# =========================
-# HELPERS
-# =========================
-def log(msg: str):
-    ts = time.strftime("%H:%M:%S")
-    st.session_state.logs.append(f"[{ts}] {msg}")
-    st.session_state.logs = st.session_state.logs[-50:]
-
-
-def init_groww(token: str):
-    st.session_state.groww = GrowwAPI(token=token)
-    log("token_validation => valid")
-
+if "last_refresh" not in st.session_state:
+    st.session_state.last_refresh = 0
 
 # =========================
 # SIDEBAR
 # =========================
-with st.sidebar:
-    st.header("Setup")
+st.sidebar.header("Setup")
 
-    token = st.text_area(
-        "Paste Groww access token (1 only)",
-        height=120
-    )
+token = st.sidebar.text_area(
+    "Paste Groww access token (1 only)",
+    height=120
+)
 
-    poll_interval = st.number_input(
-        "Poll interval (seconds)",
-        min_value=3,
-        max_value=30,
-        value=5
-    )
+poll_seconds = st.sidebar.number_input(
+    "Poll interval (seconds)",
+    min_value=3,
+    max_value=30,
+    value=5
+)
 
-    if st.button("Initialize token"):
-        if token.strip():
-            init_groww(token.strip())
-        else:
-            st.error("Token cannot be empty")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Start"):
-            st.session_state.running = True
-            log("engine started")
-
-    with col2:
-        if st.button("Stop"):
-            st.session_state.running = False
-            log("engine stopped")
+if st.sidebar.button("Initialize token"):
+    try:
+        st.session_state.groww = GrowwAPI(token.strip())
+        st.session_state.logs.append("token_validation => valid")
+    except Exception as e:
+        st.session_state.logs.append(f"token_validation => failed: {e}")
 
 # =========================
-# MAIN UI
+# BOT STATUS
 # =========================
-st.title("📊 Groww NSE Paper Trading Dashboard")
-
-# Bot status
-st.subheader("Bot status")
-if st.session_state.running:
+if st.session_state.groww:
     st.success("🟢 Running")
 else:
-    st.warning("🟡 Stopped")
+    st.warning("🔴 Not Initialized")
+
+# =========================
+# AUTO REFRESH
+# =========================
+now = time.time()
+if now - st.session_state.last_refresh >= poll_seconds:
+    st.session_state.last_refresh = now
+    st.rerun()
 
 # =========================
 # INDEX LTP
 # =========================
 st.subheader("📈 Live Market Prices (Index)")
 
-index_placeholder = st.empty()
+if st.session_state.groww:
+    try:
+        index_ltp = st.session_state.groww.get_ltp(
+            segment=st.session_state.groww.SEGMENT_CASH,
+            exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY")
+        )
+
+        st.table([
+            {"Symbol": k, "LTP": v}
+            for k, v in index_ltp.items()
+        ])
+
+        st.session_state.logs.append(f"INDEX LTP {index_ltp}")
+
+    except Exception as e:
+        st.error("Index fetch failed")
+        st.session_state.logs.append(f"index_error: {e}")
+else:
+    st.info("Waiting for index data...")
 
 # =========================
 # F&O LTP
 # =========================
 st.subheader("📉 Live Market Prices (F&O)")
 
-fno_placeholder = st.empty()
+if st.session_state.groww:
+    try:
+        # 🔹 Monthly option (works with get_ltp)
+        monthly_symbol = "NSE_NIFTY26FEB24500CE"
+
+        monthly_ltp = st.session_state.groww.get_ltp(
+            segment=st.session_state.groww.SEGMENT_FNO,
+            exchange_trading_symbols=monthly_symbol
+        )
+
+        # 🔹 Weekly option (ONLY get_quote works)
+        weekly_symbol = "NIFTY2621020400CE"
+
+        weekly_quote = st.session_state.groww.get_quote(
+            st.session_state.groww.EXCHANGE_NSE,
+            st.session_state.groww.SEGMENT_FNO,
+            weekly_symbol
+        )
+
+        fno_data = [
+            {"Symbol": monthly_symbol, "LTP": monthly_ltp.get(monthly_symbol)},
+            {"Symbol": weekly_symbol, "LTP": weekly_quote.get("ltp")}
+        ]
+
+        st.table(fno_data)
+
+    except Exception as e:
+        st.error("F&O fetch failed")
+        st.session_state.logs.append(f"fno_error: {e}")
+else:
+    st.info("Waiting for F&O data...")
 
 # =========================
 # LOGS
 # =========================
-st.subheader("Live logs (last 50)")
-log_placeholder = st.empty()
-
-# =========================
-# ENGINE LOOP
-# =========================
-if st.session_state.running and st.session_state.groww:
-
-    try:
-        groww = st.session_state.groww
-
-        # -------- INDEX LTP (MULTI SYMBOL, get_ltp) --------
-        index_symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
-
-        index_resp = groww.get_ltp(
-            segment=groww.SEGMENT_CASH,
-            exchange_trading_symbols=tuple(index_symbols)
-        )
-
-        # get_ltp returns dict for multi symbols
-        if isinstance(index_resp, dict):
-            st.session_state.index_ltp = index_resp
-            log(f"INDEX LTP {index_resp}")
-
-        # -------- F&O LTP (SINGLE SYMBOL, get_quote) --------
-        # Example WEEKLY or MONTHLY option
-        fno_symbol = "NIFTY26FEB24500CE"
-
-        quote = groww.get_quote(
-            groww.EXCHANGE_NSE,
-            groww.SEGMENT_FNO,
-            fno_symbol
-        )
-
-        # get_quote returns dict
-        if isinstance(quote, dict) and "ltp" in quote:
-            st.session_state.fno_ltp = {fno_symbol: quote["ltp"]}
-            log(f"FNO LTP {st.session_state.fno_ltp}")
-
-    except Exception as e:
-        log(f"engine error: {e}")
-
-# =========================
-# RENDER INDEX TABLE
-# =========================
-if st.session_state.index_ltp:
-    index_placeholder.table([
-        {"Symbol": k, "LTP": v}
-        for k, v in st.session_state.index_ltp.items()
-    ])
-else:
-    index_placeholder.info("Waiting for index data...")
-
-# =========================
-# RENDER F&O TABLE
-# =========================
-if st.session_state.fno_ltp:
-    fno_placeholder.table([
-        {"Symbol": k, "LTP": v}
-        for k, v in st.session_state.fno_ltp.items()
-    ])
-else:
-    fno_placeholder.info("Waiting for F&O data...")
-
-# =========================
-# RENDER LOGS
-# =========================
-log_placeholder.code("\n".join(st.session_state.logs))
-
-# =========================
-# AUTO REFRESH
-# =========================
-if st.session_state.running:
-    time.sleep(poll_interval)
-    st.rerun()
+st.subheader("🧾 Live logs (last 50)")
+for log in st.session_state.logs[-50:]:
+    st.code(log)
