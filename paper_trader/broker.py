@@ -3,58 +3,46 @@ from growwapi import GrowwAPI
 
 
 class GrowwPaperBroker:
-    def __init__(self, token: str):
-        # Correct Groww SDK usage
-        self.client = GrowwAPI(token)
+    def __init__(self, access_token: str):
+        self.client = GrowwAPI(access_token)
 
     # ============================
-    # INDEX LTP (CASH SEGMENT)
+    # INDEX LTP (CASH)
     # ============================
     def get_index_ltp(self, symbols: List[str]) -> Dict[str, float]:
-        """
-        Always returns Dict[symbol, ltp]
-        """
         response = self.client.get_ltp(
-            segment=self.client.SEGMENT_CASH,
+            segment="CASH",
             exchange_trading_symbols=tuple(symbols),
         )
 
-        # Groww returns float for single symbol
-        if isinstance(response, float):
-            return {symbols[0]: response}
-
-        if isinstance(response, dict):
-            return response
-
-        raise TypeError(f"Unexpected LTP response type: {type(response)}")
+        # Normalize response
+        return {
+            sym: float(data["last_price"])
+            for sym, data in response.items()
+        }
 
     # ============================
-    # F&O MONTHLY OPTIONS (MULTI – UP TO 50)
+    # F&O MONTHLY (MULTI SYMBOL)
     # ============================
     def get_fno_monthly_ltp(self, symbols: List[str]) -> Dict[str, float]:
         response = self.client.get_ltp(
-            segment=self.client.SEGMENT_FNO,
+            segment="FNO",
             exchange_trading_symbols=tuple(symbols),
         )
 
-        if isinstance(response, float):
-            return {symbols[0]: response}
-
-        if isinstance(response, dict):
-            return response
-
-        raise TypeError(f"Unexpected FNO LTP response type: {type(response)}")
+        return {
+            sym: float(data["last_price"])
+            for sym, data in response.items()
+        }
 
     # ============================
-    # F&O WEEKLY OPTIONS (SINGLE ONLY)
+    # F&O WEEKLY (SINGLE SYMBOL ONLY)
     # ============================
     def get_fno_weekly_ltp(self, symbol: str) -> Dict[str, float]:
         quote = self.client.get_quote(
-            segment=self.client.SEGMENT_FNO,
-            exchange_trading_symbol=symbol,
+            trading_symbol=symbol  # ✅ CORRECT PARAM NAME
         )
 
-        if not isinstance(quote, dict) or "last_price" not in quote:
-            raise ValueError("Invalid weekly quote response")
-
-        return {symbol: float(quote["last_price"])}
+        return {
+            symbol: float(quote["last_price"])
+        }
