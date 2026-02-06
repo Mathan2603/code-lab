@@ -77,7 +77,7 @@ st.subheader("Bot status")
 st.markdown("🟢 Running" if st.session_state.running else "🔴 Stopped")
 
 # ============================
-# POLLING LOOP
+# POLLING LOOP (NO rerun hacks)
 # ============================
 if st.session_state.running and st.session_state.broker:
     now = time.time()
@@ -85,8 +85,8 @@ if st.session_state.running and st.session_state.broker:
         st.session_state.last_poll = now
 
         try:
-            index_symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
-            ltp = st.session_state.broker.get_index_ltp(index_symbols)
+            symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
+            ltp = st.session_state.broker.get_index_ltp(symbols)
 
             st.session_state.ltp_data = ltp
             st.session_state.logs.append(f"LTP fetched {ltp}")
