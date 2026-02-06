@@ -1,7 +1,8 @@
 from __future__ import annotations
-
 import time
+import uuid
 import streamlit as st
+from datetime import datetime
 from growwapi import GrowwAPI
 
 # =========================
@@ -14,125 +15,173 @@ st.set_page_config(
 )
 
 st.title("📈 Groww Paper Trading Dashboard")
-st.caption("Index + Weekly F&O LTP • Auto refresh every 5 seconds")
+st.caption("Index + Weekly + Monthly F&O • Paper Trading • Multi-Token")
 
 # =========================
 # SESSION STATE INIT
 # =========================
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = 0.0
+def init_state():
+    defaults = {
+        "tokens": {},
+        "active_tab": 0,
+        "last_refresh": 0.0,
+        "trade_log": [],
+        "error_log": [],
+        "positions": [],
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-if "groww" not in st.session_state:
-    st.session_state.groww = None
+init_state()
 
 # =========================
-# SIDEBAR – TOKEN INPUT
+# SIDEBAR – TOKENS
 # =========================
 with st.sidebar:
-    st.header("🔑 Groww Token")
-    token_input = st.text_area(
-        "Paste Groww Access Token",
-        height=150,
-        placeholder="eyJraWQiOiJ...",
-    )
+    st.header("🔑 Groww Tokens (Max 5)")
+    for i in range(5):
+        token = st.text_area(
+            f"Token {i+1}",
+            key=f"token_{i}",
+            height=80,
+        )
+        if token.strip():
+            st.session_state.tokens[i] = token.strip()
 
-    weekly_symbol = st.text_input(
-        "Weekly Option Symbol",
-        value="NIFTY2621026400CE",
-        help="Example: NIFTY2621026400CE (NO NSE_ prefix)",
-    )
-
-    poll_seconds = st.number_input(
-        "Refresh interval (seconds)",
+    refresh_interval = st.number_input(
+        "Refresh Interval (seconds)",
         min_value=5,
         max_value=30,
         value=5,
         step=1,
     )
 
-    if st.button("🚀 Initialize", width="stretch"):
-        if not token_input.strip():
-            st.error("Please paste a valid Groww token")
-        else:
-            st.session_state.groww = GrowwAPI(token_input.strip())
-            st.success("Groww API initialized successfully")
-
-# =========================
-# STOP IF NOT INITIALIZED
-# =========================
-if st.session_state.groww is None:
-    st.info("👈 Paste token and click Initialize")
-    st.stop()
-
-groww = st.session_state.groww
-
 # =========================
 # AUTO REFRESH (SAFE)
 # =========================
 now = time.time()
-if now - st.session_state.last_refresh >= poll_seconds:
+if now - st.session_state.last_refresh >= refresh_interval:
     st.session_state.last_refresh = now
     st.rerun()
 
 # =========================
-# FETCH INDEX LTP (CASH)
+# TOKEN TABS
 # =========================
-index_error = None
-index_ltp = {}
+tabs = st.tabs([f"Token {i+1}" for i in st.session_state.tokens.keys()])
 
-try:
-    index_ltp = groww.get_ltp(
-        segment=groww.SEGMENT_CASH,
-        exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
-    )
-except Exception as e:
-    index_error = str(e)
+for tab_index, token_key in enumerate(st.session_state.tokens):
+    with tabs[tab_index]:
+        token = st.session_state.tokens[token_key]
 
-# =========================
-# FETCH WEEKLY OPTION LTP (F&O)
-# =========================
-weekly_error = None
-weekly_ltp = None
+        try:
+            groww = GrowwAPI(token)
+        except Exception as e:
+            st.error("Invalid token")
+            continue
 
-try:
-    quote = groww.get_quote(
-        exchange=groww.EXCHANGE_NSE,
-        segment=groww.SEGMENT_FNO,
-        trading_symbol=weekly_symbol.strip(),
-    )
-    weekly_ltp = quote.get("last_price")
-except Exception as e:
-    weekly_error = str(e)
+        # =========================
+        # INDEX LTP
+        # =========================
+        st.subheader("📊 Index LTP")
+        try:
+            index_ltp = groww.get_ltp(
+                segment=groww.SEGMENT_CASH,
+                exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
+            )
+            st.table(
+                [{"Symbol": k, "LTP": v} for k, v in index_ltp.items()]
+            )
+        except Exception as e:
+            st.session_state.error_log.append(str(e))
+            st.error(e)
 
-# =========================
-# UI DISPLAY
-# =========================
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("📊 Index LTP")
-    if index_error:
-        st.error(index_error)
-    else:
-        st.table(
-            [
-                {"Symbol": k, "LTP": v}
-                for k, v in index_ltp.items()
-            ]
+        # =========================
+        # WEEKLY OPTION LTP
+        # =========================
+        st.subheader("🧾 Weekly Option LTP")
+        weekly_symbol = st.text_input(
+            "Weekly Option Symbol",
+            value="NIFTY2621026400CE",
+            key=f"weekly_{tab_index}",
         )
 
-with col2:
-    st.subheader("🧾 Weekly Option LTP")
-    if weekly_error:
-        st.error(weekly_error)
-    else:
-        st.table(
-            [
-                {
-                    "Symbol": weekly_symbol,
-                    "LTP": weekly_ltp,
+        try:
+            quote = groww.get_quote(
+                exchange=groww.EXCHANGE_NSE,
+                segment=groww.SEGMENT_FNO,
+                trading_symbol=weekly_symbol,
+            )
+            st.table(
+                [{"Symbol": weekly_symbol, "LTP": quote.get("last_price")}]
+            )
+        except Exception as e:
+            st.session_state.error_log.append(str(e))
+            st.error(e)
+
+        # =========================
+        # MONTHLY OPTION MULTI-LTP
+        # =========================
+        st.subheader("📈 Monthly Options (Multi-LTP)")
+        monthly_symbols = st.text_area(
+            "Monthly Symbols (comma separated)",
+            value="NSE_NIFTY25JAN24500CE,NSE_NIFTY25JAN24500PE",
+            key=f"monthly_{tab_index}",
+        )
+
+        try:
+            symbols = tuple(s.strip() for s in monthly_symbols.split(",") if s.strip())
+            monthly_ltp = groww.get_ltp(
+                segment=groww.SEGMENT_FNO,
+                exchange_trading_symbols=symbols,
+            )
+            st.table(
+                [{"Symbol": k, "LTP": v} for k, v in monthly_ltp.items()]
+            )
+        except Exception as e:
+            st.session_state.error_log.append(str(e))
+            st.error(e)
+
+        # =========================
+        # PAPER TRADE ENTRY
+        # =========================
+        st.subheader("🧠 Paper Trade")
+        with st.form(f"trade_form_{tab_index}"):
+            symbol = st.text_input("Symbol")
+            qty = st.number_input("Quantity", min_value=1, value=1)
+            price = st.number_input("Price", min_value=0.0)
+            side = st.selectbox("Side", ["BUY", "SELL"])
+            submit = st.form_submit_button("Execute")
+
+            if submit:
+                trade = {
+                    "id": str(uuid.uuid4())[:8],
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "symbol": symbol,
+                    "qty": qty,
+                    "price": price,
+                    "side": side,
                 }
-            ]
-        )
+                st.session_state.trade_log.append(trade)
+                st.session_state.positions.append(trade)
+                st.success("Paper trade executed")
 
-st.caption(f"⏱ Auto-refreshing every {poll_seconds} seconds")
+# =========================
+# LOGS SECTION
+# =========================
+st.divider()
+st.subheader("🧾 Trade Logs")
+st.table(st.session_state.trade_log)
+
+st.subheader("🚨 Error Logs")
+st.table([{"Error": e} for e in st.session_state.error_log[-50:]])
+
+# =========================
+# PNL CALCULATION
+# =========================
+st.subheader("📊 PnL Summary")
+pnl = 0.0
+for t in st.session_state.positions:
+    pnl += t["price"] * t["qty"] * (1 if t["side"] == "SELL" else -1)
+
+st.metric("Net PnL", round(pnl, 2))
