@@ -1,17 +1,23 @@
 from __future__ import annotations
-
 import threading
 import time
-from datetime import time as dtime
-from typing import Any
-
 from paper_trader.broker import GrowwPaperBroker
-from paper_trader.data_store import CsvStore
-from paper_trader.models import EngineSnapshot, Position, TokenStatus
-from paper_trader.risk import RiskManager
-from paper_trader.strategy import DirectionalTrend
 from paper_trader.token_pool import TokenPool
-from paper_trader.utils import InMemoryLogger, now_ist, token_preview
+from paper_trader.utils import now_ist, token_preview
+from paper_trader.models import EngineSnapshot
+
+
+def extract_ltp(payload, symbol: str) -> float:
+    if isinstance(payload, (int, float)):
+        return float(payload)
+
+    if isinstance(payload, dict):
+        val = payload.get(symbol)
+        if isinstance(val, dict):
+            return float(val.get("ltp"))
+        return float(val)
+
+    raise RuntimeError(f"Unable to extract LTP for {symbol}")
 
 
 class PaperTraderEngine:
@@ -19,120 +25,82 @@ class PaperTraderEngine:
         self,
         broker: GrowwPaperBroker,
         token_pool: TokenPool,
-        poll_seconds: int = 5,
-        quantity: int = 1,
+        poll_seconds: int,
+        quantity: int,
     ) -> None:
         self.broker = broker
         self.tokens = token_pool
-        self.poll_seconds = max(5, poll_seconds)
-        self.quantity = max(1, quantity)
+        self.poll_seconds = poll_seconds
+        self.quantity = quantity
 
-        self.logger = InMemoryLogger(capacity=500)
-        self.store = CsvStore()
-        self.risk = RiskManager()
-
-        self.trend = {
-            "NSE_NIFTY": DirectionalTrend(),
-            "NSE_BANKNIFTY": DirectionalTrend(),
-        }
-
-        self.positions: list[Position] = []
-        self.realized_pnl = 0.0
-
-        self._thread: threading.Thread | None = None
+        self._thread = None
         self._stop = threading.Event()
-        self._active_token: str = ""
 
-        # 🔥 NEW: live LTP cache
-        self.latest_ltps: dict[str, float] = {}
+        self.active_token = ""
+        self.logs: list[str] = []
+        self.last_prices: dict[str, float] = {}
 
-    # ---------------- TOKEN ----------------
+    def log(self, msg: str) -> None:
+        self.logs.append(f"[{now_ist().strftime('%H:%M:%S')}] {msg}")
+        self.logs = self.logs[-50:]
 
-    def validate_tokens(self) -> list[tuple[str, bool, str]]:
+    def validate_tokens(self):
         rows = []
-        for status in self.tokens.statuses():
+        for t in self.tokens.statuses():
             try:
-                client = self.broker._client(status.token)
-                client.get_ltp(
-                    segment=client.SEGMENT_CASH,
-                    exchange_trading_symbols=("NSE_NIFTY",),
-                )
-                rows.append((token_preview(status.token), True, "valid"))
-                self.logger.info(f"token_validation {token_preview(status.token)} => valid")
-            except Exception as exc:
-                self.tokens.mark_failed(status.token, str(exc))
-                rows.append((token_preview(status.token), False, str(exc)))
-                self.logger.info(
-                    f"token_validation {token_preview(status.token)} => {exc}"
-                )
+                self.broker.validate_token(t.token)
+                rows.append((token_preview(t.token), True, "valid"))
+                self.log(f"token_validation {token_preview(t.token)} => valid")
+            except Exception as e:
+                self.tokens.mark_failed(t.token, str(e))
+                rows.append((token_preview(t.token), False, str(e)))
+                self.log(f"token_validation {token_preview(t.token)} => {e}")
         return rows
 
-    # ---------------- ENGINE CONTROL ----------------
-
-    def start(self) -> None:
+    def start(self):
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        self.logger.info("engine started")
+        self.log("engine started")
 
-    def stop(self) -> None:
+    def stop(self):
         self._stop.set()
-        self.logger.info("engine stopped")
+        self.log("engine stopped")
 
-    # ---------------- SNAPSHOT ----------------
-
-    def snapshot(self) -> EngineSnapshot:
-        return EngineSnapshot(
-            running=bool(self._thread and self._thread.is_alive()),
-            active_token_preview=token_preview(self._active_token)
-            if self._active_token
-            else "-",
-            realized_pnl=self.realized_pnl,
-            unrealized_pnl=0.0,
-            open_positions=list(self.positions),
-            logs=self.logger.tail(50),
-        )
-
-    # 🔥 NEW: expose LTPs
-    def get_latest_ltps(self) -> dict[str, float]:
-        return dict(self.latest_ltps)
-
-    # ---------------- LOOP ----------------
-
-    def _next_token(self) -> TokenStatus:
-        status = self.tokens.choose_next()
-        self._active_token = status.token
-        return status
-
-    def _run_loop(self) -> None:
+    def _run(self):
         while not self._stop.is_set():
             try:
-                now = now_ist().time()
-                if now < dtime(9, 15):
-                    time.sleep(self.poll_seconds)
-                    continue
+                ts = self.tokens.next()
+                self.active_token = ts.token
 
-                self._poll_underlyings()
+                groww = self.broker.client(ts.token)
+                resp = self.broker.get_ltp(
+                    token=ts.token,
+                    segment=groww.SEGMENT_CASH,
+                    symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
+                )
 
-            except Exception as exc:
-                self.logger.info(f"engine error: {exc}")
+                self.last_prices = {
+                    "NSE_NIFTY": extract_ltp(resp, "NSE_NIFTY"),
+                    "NSE_BANKNIFTY": extract_ltp(resp, "NSE_BANKNIFTY"),
+                }
+
+                self.log(f"LTP fetched {self.last_prices}")
+
+            except Exception as e:
+                self.log(f"engine error: {e}")
 
             time.sleep(self.poll_seconds)
 
-    # ---------------- MARKET DATA ----------------
-
-    def _poll_underlyings(self) -> None:
-        token = self._next_token().token
-        client = self.broker._client(token)
-
-        resp = client.get_ltp(
-            segment=client.SEGMENT_CASH,
-            exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY"),
+    def snapshot(self) -> EngineSnapshot:
+        return EngineSnapshot(
+            running=self._thread.is_alive() if self._thread else False,
+            active_token_preview=token_preview(self.active_token),
+            realized_pnl=0.0,
+            unrealized_pnl=0.0,
+            open_positions=[],
+            logs=self.logs,
+            last_prices=self.last_prices,
         )
-
-        for symbol, payload in resp.items():
-            ltp = float(payload["ltp"])
-            self.latest_ltps[symbol] = ltp
-            self.logger.info(f"LTP {symbol} = {ltp}")
