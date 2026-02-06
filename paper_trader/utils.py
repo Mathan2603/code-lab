@@ -1,29 +1,20 @@
 from __future__ import annotations
 
-from collections import deque
 from datetime import datetime
-from zoneinfo import ZoneInfo
+import pytz
 
-IST = ZoneInfo("Asia/Kolkata")
-
-
-class InMemoryLogger:
-    def __init__(self, capacity: int = 200) -> None:
-        self._buffer: deque[str] = deque(maxlen=capacity)
-
-    def info(self, msg: str) -> None:
-        ts = datetime.now(tz=IST).strftime("%Y-%m-%d %H:%M:%S")
-        self._buffer.append(f"[{ts}] {msg}")
-
-    def tail(self, n: int = 50) -> list[str]:
-        return list(self._buffer)[-n:]
+IST = pytz.timezone("Asia/Kolkata")
 
 
 def now_ist() -> datetime:
-    return datetime.now(tz=IST)
+    """Return current IST datetime"""
+    return datetime.now(IST)
 
 
-def token_preview(token: str) -> str:
-    if len(token) <= 8:
-        return token
-    return f"{token[:4]}...{token[-4:]}"
+def log(message: str) -> str:
+    """
+    Standard log formatter used across app + engine
+    Returns formatted string (does NOT print)
+    """
+    ts = now_ist().strftime("%H:%M:%S")
+    return f"[{ts}] {message}"
