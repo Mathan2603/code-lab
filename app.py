@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import streamlit as st
-from typing import Dict
+from typing import Dict, List
 
 from paper_trader.broker import GrowwPaperBroker
 
@@ -28,11 +28,11 @@ if "running" not in st.session_state:
 if "logs" not in st.session_state:
     st.session_state.logs = []
 
-if "ltp_data" not in st.session_state:
-    st.session_state.ltp_data: Dict[str, float] = {}
+if "ltp_cash" not in st.session_state:
+    st.session_state.ltp_cash: Dict[str, float] = {}
 
-if "last_poll" not in st.session_state:
-    st.session_state.last_poll = 0.0
+if "ltp_fno" not in st.session_state:
+    st.session_state.ltp_fno: Dict[str, float] = {}
 
 # ============================
 # SIDEBAR
@@ -48,7 +48,7 @@ with st.sidebar:
     poll_seconds = st.number_input(
         "Poll interval (seconds)",
         min_value=3,
-        max_value=60,
+        max_value=30,
         value=5,
     )
 
@@ -77,34 +77,79 @@ st.subheader("Bot status")
 st.markdown("🟢 Running" if st.session_state.running else "🔴 Stopped")
 
 # ============================
-# POLLING LOOP (NO rerun hacks)
+# MAIN LOOP (SAFE STREAMLIT WAY)
 # ============================
 if st.session_state.running and st.session_state.broker:
-    now = time.time()
-    if now - st.session_state.last_poll >= poll_seconds:
-        st.session_state.last_poll = now
 
-        try:
-            symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
-            ltp = st.session_state.broker.get_index_ltp(symbols)
+    try:
+        # ----------------------------
+        # CASH / INDEX LTP
+        # ----------------------------
+        cash_symbols = ["NSE_NIFTY", "NSE_BANKNIFTY"]
+        cash_ltp = st.session_state.broker.get_index_ltp(cash_symbols)
+        st.session_state.ltp_cash = cash_ltp
 
-            st.session_state.ltp_data = ltp
-            st.session_state.logs.append(f"LTP fetched {ltp}")
+        # ----------------------------
+        # F&O MONTHLY (MULTI)
+        # ----------------------------
+        monthly_fno_symbols = [
+            "NSE_NIFTY26FEB24500CE",
+            "NSE_NIFTY26FEB24600CE",
+        ]
 
-        except Exception as e:
-            st.session_state.logs.append(f"engine error: {e}")
+        monthly_ltp = st.session_state.broker.get_fno_monthly_ltp(
+            monthly_fno_symbols
+        )
+
+        # ----------------------------
+        # F&O WEEKLY (SINGLE ONLY)
+        # ----------------------------
+        weekly_symbol = "NIFTY2621020400CE"
+        weekly_ltp = st.session_state.broker.get_fno_weekly_ltp(
+            weekly_symbol
+        )
+
+        # MERGE FNO DATA
+        fno_ltp = {}
+        fno_ltp.update(monthly_ltp)
+        fno_ltp.update(weekly_ltp)
+
+        st.session_state.ltp_fno = fno_ltp
+
+        st.session_state.logs.append(
+            f"LTP fetched CASH={cash_ltp} FNO={fno_ltp}"
+        )
+
+    except Exception as e:
+        st.session_state.logs.append(f"engine error: {e}")
+
+    # ⏱️ THIS IS THE REFRESH MECHANISM
+    time.sleep(poll_seconds)
+    st.rerun()
 
 # ============================
-# LTP DISPLAY
+# DISPLAY CASH LTP
 # ============================
-st.subheader("📊 Live Market Prices (LTP)")
+st.subheader("📊 Live Market Prices (Index)")
 
-if st.session_state.ltp_data:
+if st.session_state.ltp_cash:
     st.table(
-        [{"Symbol": k, "LTP": v} for k, v in st.session_state.ltp_data.items()]
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.ltp_cash.items()]
     )
 else:
-    st.info("Waiting for market data...")
+    st.info("Waiting for index data...")
+
+# ============================
+# DISPLAY F&O LTP
+# ============================
+st.subheader("📈 Live Market Prices (F&O)")
+
+if st.session_state.ltp_fno:
+    st.table(
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.ltp_fno.items()]
+    )
+else:
+    st.info("Waiting for F&O data...")
 
 # ============================
 # LOGS
