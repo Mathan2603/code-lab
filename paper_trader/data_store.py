@@ -1,34 +1,31 @@
 from __future__ import annotations
 
 import csv
-import os
-from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 
 from paper_trader.models import Position, TradeRecord
 from paper_trader.utils import IST
 
 
-class TradeDataStore:
-    def __init__(self, trade_log_dir: str, portfolio_path: str) -> None:
+class CsvStore:
+    def __init__(self, trade_log_dir: str = "paper_logs", portfolio_path: str = "data-paper_portfolio.csv") -> None:
         self.trade_log_dir = Path(trade_log_dir)
-        self.portfolio_path = Path(portfolio_path)
         self.trade_log_dir.mkdir(parents=True, exist_ok=True)
+        self.portfolio_path = Path(portfolio_path)
+        self.portfolio_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.portfolio_path.exists():
-            self._init_portfolio()
+            self.write_positions([])
 
-    def trade_log_path(self, trade_date: datetime) -> Path:
-        file_name = trade_date.strftime("paper_trades_%Y%m%d.csv")
-        return self.trade_log_dir / f"paper_logs-{file_name}"
+    def _trade_file(self, ts) -> Path:
+        return self.trade_log_dir / f"paper_logs-paper_trades_{ts.strftime('%Y%m%d')}.csv"
 
-    def _init_trade_log(self, path: Path) -> None:
-        if path.exists():
-            return
-        with path.open("w", newline="", encoding="utf-8") as handle:
+    def append_trade(self, trade: TradeRecord) -> None:
+        fpath = self._trade_file(trade.time)
+        new_file = not fpath.exists()
+        with fpath.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(
-                [
+            if new_file:
+                writer.writerow([
                     "s.no",
                     "time (IST)",
                     "symbol",
@@ -39,92 +36,31 @@ class TradeDataStore:
                     "target",
                     "sold price",
                     "P&L after trade",
-                ]
-            )
+                ])
+            writer.writerow([
+                trade.sno,
+                trade.time.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                trade.symbol,
+                f"{trade.buy_price:.2f}",
+                trade.quantity,
+                f"{trade.entry_price:.2f}",
+                f"{trade.stop_loss:.2f}",
+                f"{trade.target:.2f}",
+                f"{trade.sold_price:.2f}",
+                f"{trade.pnl_after_trade:.2f}",
+            ])
 
-    def _init_portfolio(self) -> None:
-        self.portfolio_path.parent.mkdir(parents=True, exist_ok=True)
+    def write_positions(self, positions: list[Position]) -> None:
         with self.portfolio_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "symbol",
-                    "entry_price",
-                    "quantity",
-                    "stop_loss",
-                    "target",
-                    "open_time",
-                    "side",
-                ]
-            )
-
-    def append_trade(self, record: TradeRecord) -> None:
-        path = self.trade_log_path(record.time)
-        self._init_trade_log(path)
-        with path.open("a", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    record.sno,
-                    record.time.astimezone(IST).strftime("%Y-%m-%d %H:%M:%S"),
-                    record.symbol,
-                    f"{record.buy_price:.2f}",
-                    record.quantity,
-                    f"{record.entry_price:.2f}",
-                    f"{record.stop_loss:.2f}",
-                    f"{record.target:.2f}",
-                    f"{record.sold_price:.2f}",
-                    f"{record.pnl_after_trade:.2f}",
-                ]
-            )
-
-    def write_portfolio(self, positions: list[Position]) -> None:
-        with self.portfolio_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "symbol",
-                    "entry_price",
-                    "quantity",
-                    "stop_loss",
-                    "target",
-                    "open_time",
-                    "side",
-                ]
-            )
-            for position in positions:
-                writer.writerow(
-                    [
-                        position.symbol,
-                        f"{position.entry_price:.2f}",
-                        position.quantity,
-                        f"{position.stop_loss:.2f}",
-                        f"{position.target:.2f}",
-                        position.open_time.astimezone(IST).isoformat(),
-                        position.side,
-                    ]
-                )
-
-    def load_portfolio(self) -> list[Position]:
-        if not self.portfolio_path.exists():
-            return []
-        positions: list[Position] = []
-        with self.portfolio_path.open("r", newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                positions.append(
-                    Position(
-                        symbol=row["symbol"],
-                        entry_price=float(row["entry_price"]),
-                        quantity=int(row["quantity"]),
-                        stop_loss=float(row["stop_loss"]),
-                        target=float(row["target"]),
-                        open_time=datetime.fromisoformat(row["open_time"]),
-                        side=row["side"],
-                        max_favorable_price=float(row["entry_price"]),
-                    )
-                )
-        return positions
-
-    def snapshot(self, positions: list[Position]) -> list[dict[str, str]]:
-        return [asdict(position) for position in positions]
+            writer.writerow(["symbol", "quantity", "entry_price", "stop_loss", "target", "opened_at", "direction"])
+            for p in positions:
+                writer.writerow([
+                    p.symbol,
+                    p.quantity,
+                    f"{p.entry_price:.2f}",
+                    f"{p.stop_loss:.2f}",
+                    f"{p.target:.2f}",
+                    p.opened_at.astimezone(IST).isoformat(),
+                    p.direction,
+                ])

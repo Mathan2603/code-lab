@@ -1,229 +1,317 @@
 from __future__ import annotations
 
-import time as time_module
+import threading
+import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, time as dtime
+from typing import Any
 
-from paper_trader.broker import GrowwBroker
-from paper_trader.config import StorageConfig, TradeConfig
-from paper_trader.data_store import TradeDataStore
-from paper_trader.execution import PaperExecutionEngine
-from paper_trader.models import OptionContract, Position
+from paper_trader.broker import GrowwPaperBroker
+from paper_trader.data_store import CsvStore
+from paper_trader.models import EngineSnapshot, OptionContract, Position, TokenStatus, TradeRecord
 from paper_trader.risk import RiskManager
-from paper_trader.strategy import SimpleTrendStrategy
-from paper_trader.utils import IST, now_ist, time_in_range
+from paper_trader.strategy import DirectionalTrend
+from paper_trader.token_pool import TokenPool
+from paper_trader.utils import InMemoryLogger, IST, now_ist, token_preview
 
 
 @dataclass
-class UnderlyingState:
-    symbol: str
-    trend: SimpleTrendStrategy
-    expiry: str | None = None
-    contracts: list[OptionContract] | None = None
-    last_refresh: date | None = None
+class InstrumentBook:
+    rows: list[dict[str, Any]]
 
 
-class OptionPaperTrader:
-    def __init__(
-        self,
-        broker: GrowwBroker,
-        trade_config: TradeConfig,
-        storage_config: StorageConfig,
-    ) -> None:
-        self._broker = broker
-        self._config = trade_config
-        self._storage = TradeDataStore(
-            trade_log_dir=storage_config.trade_log_dir,
-            portfolio_path=storage_config.portfolio_path,
-        )
-        self._risk = RiskManager(
-            max_loss_per_trade=trade_config.max_loss_per_trade,
-            max_daily_loss=trade_config.max_daily_loss,
-            max_consecutive_losses=trade_config.max_consecutive_losses,
-        )
-        self._execution = PaperExecutionEngine(self._risk)
-        self._positions: list[Position] = []
-        self._underlyings = {
-            symbol: UnderlyingState(symbol=symbol, trend=SimpleTrendStrategy())
-            for symbol in trade_config.underlying_symbols
-        }
-        if trade_config.allow_sensex:
-            self._underlyings["NSE_SENSEX"] = UnderlyingState(
-                symbol="NSE_SENSEX",
-                trend=SimpleTrendStrategy(),
-            )
+class PaperTraderEngine:
+    def __init__(self, broker: GrowwPaperBroker, token_pool: TokenPool, poll_seconds: int = 5, quantity: int = 1) -> None:
+        self.broker = broker
+        self.tokens = token_pool
+        self.poll_seconds = max(5, poll_seconds)
+        self.quantity = max(1, quantity)
+        self.logger = InMemoryLogger(capacity=500)
+        self.store = CsvStore()
+        self.risk = RiskManager()
+        self.trend = {"NSE_NIFTY": DirectionalTrend(), "NSE_BANKNIFTY": DirectionalTrend()}
+        self.positions: list[Position] = []
+        self.realized_pnl = 0.0
+        self.unrealized_pnl = 0.0
+        self.trade_seq = 0
+        self._active_token = ""
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._book: InstrumentBook | None = None
 
-    def _refresh_contracts(self, state: UnderlyingState) -> None:
-        expiries = self._broker.get_expiries(state.symbol)
-        if not expiries:
-            raise ValueError(f"No expiries returned for {state.symbol}.")
-        expiry = sorted(expiries)[0]
-        contracts_raw = self._broker.get_contracts(state.symbol, expiry)
-        contracts = self._parse_contracts(contracts_raw, expiry)
-        if not contracts:
-            raise ValueError(f"No contracts returned for {state.symbol} {expiry}.")
-        state.expiry = expiry
-        state.contracts = contracts
-        state.last_refresh = now_ist().date()
+    def validate_tokens(self) -> list[tuple[str, bool, str]]:
+        rows: list[tuple[str, bool, str]] = []
+        for status in self.tokens.statuses():
+            ok, msg = self.broker.validate_token(status)
+            if not ok:
+                self.tokens.mark_failed(status.token, msg)
+            rows.append((token_preview(status.token), ok, msg))
+            self.logger.info(f"token_validation {token_preview(status.token)} => {msg}")
+        return rows
 
-    def _parse_contracts(
-        self, contracts_raw: list[dict[str, object]], expiry: str
-    ) -> list[OptionContract]:
-        contracts: list[OptionContract] = []
-        for item in contracts_raw:
-            symbol = item.get("symbol") or item.get("trading_symbol")
-            strike = item.get("strike") or item.get("strike_price")
-            option_type = item.get("option_type") or item.get("instrument_type")
-            if symbol is None or strike is None or option_type is None:
-                raise ValueError(
-                    "Invalid contract data returned from Groww. "
-                    "Expected symbol, strike, and option_type."
-                )
-            option_type = str(option_type).upper()
-            if option_type not in {"CE", "PE"}:
-                continue
-            contracts.append(
-                OptionContract(
-                    symbol=str(symbol),
-                    strike=float(strike),
-                    option_type=option_type,
-                    expiry=expiry,
-                )
-            )
-        return contracts
-
-    def _select_option(
-        self, state: UnderlyingState, underlying_price: float, direction: str
-    ) -> OptionContract:
-        if state.contracts is None:
-            raise ValueError("Contracts not loaded.")
-        sorted_contracts = sorted(
-            state.contracts,
-            key=lambda c: abs(c.strike - underlying_price),
-        )
-        nearest = sorted_contracts[:20]
-        for contract in nearest:
-            if direction == "up" and contract.option_type == "CE":
-                return contract
-            if direction == "down" and contract.option_type == "PE":
-                return contract
-        raise ValueError(
-            f"No matching option contracts found for {state.symbol} direction={direction}."
-        )
-
-    def _update_trailing_stop(self, position: Position, ltp: float) -> None:
-        step_move = position.entry_price * self._config.trail_step_pct
-        if ltp < position.max_favorable_price + step_move:
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
             return
-        position.max_favorable_price = ltp
-        trail_sl = ltp * (1 - self._config.trail_sl_pct)
-        if trail_sl > position.stop_loss:
-            position.stop_loss = trail_sl
+        self._load_instruments_once()
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+        self.logger.info("paper_trader_started")
 
-    def _calculate_stop_and_target(self, entry_price: float) -> tuple[float, float]:
-        max_loss_per_unit = self._config.max_loss_per_trade / max(
-            self._config.position_size, 1
+    def stop(self) -> None:
+        self._stop.set()
+        self.logger.info("paper_trader_stop_signal")
+
+    def snapshot(self) -> EngineSnapshot:
+        return EngineSnapshot(
+            running=bool(self._thread and self._thread.is_alive()),
+            active_token_preview=token_preview(self._active_token) if self._active_token else "-",
+            realized_pnl=self.realized_pnl,
+            unrealized_pnl=self.unrealized_pnl,
+            open_positions=list(self.positions),
+            logs=self.logger.tail(50),
         )
-        initial_sl = entry_price * (1 - self._config.initial_sl_pct)
-        max_loss_sl = entry_price - max_loss_per_unit
-        stop_loss = max(initial_sl, max_loss_sl)
-        target = entry_price + (entry_price - stop_loss) * self._config.target_rr
-        return stop_loss, target
 
-    def _can_enter(self, current_time) -> bool:
-        return current_time >= self._config.entry_after
+    def _next_token(self) -> TokenStatus:
+        st = self.tokens.choose_next()
+        self._active_token = st.token
+        self.logger.info(f"token_rotation {token_preview(st.token)}")
+        return st
 
-    def _time_exit(self, current_time) -> bool:
-        return current_time >= self._config.exit_before
+    def _load_instruments_once(self) -> None:
+        if self._book is not None:
+            return
+        token = self._next_token().token
+        try:
+            rows = self.broker.load_instruments(token)
+            parsed = rows if isinstance(rows, list) else []
+            if not parsed:
+                raise RuntimeError("instrument load returned empty/non-list")
+            self._book = InstrumentBook(rows=parsed)
+            self.logger.info(f"instrument_book_loaded rows={len(parsed)}")
+        except Exception as exc:  # noqa: BLE001
+            self.tokens.mark_failed(token, str(exc))
+            raise RuntimeError(f"Unable to load instrument book: {exc}") from exc
 
-    def _close_position(self, position: Position, exit_price: float) -> None:
-        trade_record = self._execution.exit_position(position, exit_price)
-        self._storage.append_trade(trade_record)
-
-    def _poll_underlyings(self) -> dict[str, float]:
-        symbols = list(self._underlyings.keys())
-        return self._broker.get_ltp(segment="CASH", symbols=symbols)
-
-    def _poll_options(self, symbols: list[str]) -> dict[str, float]:
-        if not symbols:
-            return {}
-        return self._broker.get_ltp(segment="FNO", symbols=symbols)
-
-    def run(self) -> None:
-        while True:
-            now = now_ist()
-            current_time = now.time()
-            if not time_in_range(
-                current_time, self._config.entry_after, self._config.exit_before
-            ):
-                if current_time >= self._config.exit_before:
-                    self._exit_all_positions()
-                time_module.sleep(self._config.poll_interval_s)
-                continue
-
-            if not self._risk.can_take_trade():
-                time_module.sleep(self._config.poll_interval_s)
-                continue
-
-            underlying_prices = self._poll_underlyings()
-
-            for symbol, price in underlying_prices.items():
-                state = self._underlyings[symbol]
-                trend = state.trend.update(price)
-                if state.last_refresh != now.date():
-                    self._refresh_contracts(state)
-                if self._positions:
+    def _run_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                ok, reason = self.risk.can_trade()
+                if not ok:
+                    self.logger.info(f"risk_block {reason}")
+                    time.sleep(self.poll_seconds)
                     continue
-                if trend.direction in {"up", "down"} and self._can_enter(current_time):
-                    contract = self._select_option(state, price, trend.direction)
-                    option_prices = self._poll_options([contract.symbol])
-                    option_price = option_prices.get(contract.symbol)
-                    if option_price is None:
-                        raise ValueError(
-                            f"LTP missing for {contract.symbol}. "
-                            "Symbol format must be fetched from get_contracts."
-                        )
-                    stop_loss, target = self._calculate_stop_and_target(option_price)
-                    execution = self._execution.enter_position(
-                        symbol=contract.symbol,
-                        entry_price=option_price,
-                        quantity=self._config.position_size,
-                        stop_loss=stop_loss,
+
+                t = now_ist().time()
+                if t < dtime(10, 15):
+                    time.sleep(self.poll_seconds)
+                    continue
+
+                if t >= dtime(15, 20):
+                    self._exit_all("time_exit")
+                    time.sleep(self.poll_seconds)
+                    continue
+
+                self._evaluate_entry()
+                self._manage_position()
+            except Exception as exc:  # noqa: BLE001
+                self.logger.info(f"engine_error {exc}")
+            time.sleep(self.poll_seconds)
+
+    def _evaluate_entry(self) -> None:
+        if self.positions:
+            return
+
+        for underlying_symbol in ("NSE_NIFTY", "NSE_BANKNIFTY"):
+            token = self._next_token().token
+            try:
+                groww = self.broker.client(token)
+                payload = self.broker.get_ltp(token, groww.SEGMENT_CASH, (underlying_symbol,))
+                underlying_ltp = self._parse_ltp(payload, underlying_symbol)
+                direction = self.trend[underlying_symbol].update(underlying_ltp)
+                if direction not in {"up", "down"}:
+                    continue
+
+                option = self._select_option_from_instruments(underlying_symbol, underlying_ltp, direction)
+                opt_payload = self.broker.get_ltp(token, groww.SEGMENT_FNO, (option.symbol,))
+                entry_price = self._parse_ltp(opt_payload, option.symbol)
+                stop, target = self.risk.stop_target(entry_price, self.quantity)
+                self.positions = [
+                    Position(
+                        symbol=option.symbol,
+                        quantity=self.quantity,
+                        entry_price=entry_price,
+                        stop_loss=stop,
                         target=target,
+                        opened_at=now_ist(),
+                        direction=direction,
+                        max_price_seen=entry_price,
                     )
-                    self._positions.append(execution.position)
-                    self._storage.write_portfolio(self._positions)
+                ]
+                self.store.write_positions(self.positions)
+                self.logger.info(f"entry {option.symbol} @ {entry_price:.2f} sl={stop:.2f} tgt={target:.2f}")
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.tokens.mark_failed(token, str(exc))
+                self.logger.info(f"entry_error {token_preview(token)} {exc}")
 
-            self._manage_positions()
-            time_module.sleep(self._config.poll_interval_s)
-
-    def _manage_positions(self) -> None:
-        if not self._positions:
+    def _manage_position(self) -> None:
+        if not self.positions:
+            self.unrealized_pnl = 0.0
             return
-        symbols = [position.symbol for position in self._positions]
-        prices = self._poll_options(symbols)
-        for position in list(self._positions):
-            ltp = prices.get(position.symbol)
-            if ltp is None:
-                continue
-            self._update_trailing_stop(position, ltp)
-            if ltp <= position.stop_loss or ltp >= position.target:
-                self._close_position(position, ltp)
-                self._positions.remove(position)
-            elif self._time_exit(now_ist().time()):
-                self._close_position(position, ltp)
-                self._positions.remove(position)
-        self._storage.write_portfolio(self._positions)
 
-    def _exit_all_positions(self) -> None:
-        if not self._positions:
+        token = self._next_token().token
+        position = self.positions[0]
+        try:
+            groww = self.broker.client(token)
+            payload = self.broker.get_ltp(token, groww.SEGMENT_FNO, (position.symbol,))
+            ltp = self._parse_ltp(payload, position.symbol)
+            position.max_price_seen = max(position.max_price_seen, ltp)
+            position.stop_loss = self.risk.trail(position.stop_loss, position.max_price_seen)
+            self.unrealized_pnl = (ltp - position.entry_price) * position.quantity
+
+            if ltp <= position.stop_loss or ltp >= position.target or now_ist().time() >= dtime(15, 20):
+                self._close_position(ltp, "sl_tgt_or_time")
+            else:
+                self.store.write_positions(self.positions)
+        except Exception as exc:  # noqa: BLE001
+            self.tokens.mark_failed(token, str(exc))
+            self.logger.info(f"manage_error {token_preview(token)} {exc}")
+
+    def _close_position(self, exit_price: float, reason: str) -> None:
+        if not self.positions:
             return
-        symbols = [position.symbol for position in self._positions]
-        prices = self._poll_options(symbols)
-        for position in list(self._positions):
-            ltp = prices.get(position.symbol)
-            if ltp is None:
+        p = self.positions[0]
+        pnl = (exit_price - p.entry_price) * p.quantity
+        self.realized_pnl += pnl
+        self.unrealized_pnl = 0.0
+        self.risk.register_trade(pnl)
+        self.trade_seq += 1
+        trade = TradeRecord(
+            sno=self.trade_seq,
+            time=now_ist(),
+            symbol=p.symbol,
+            buy_price=p.entry_price,
+            quantity=p.quantity,
+            entry_price=p.entry_price,
+            stop_loss=p.stop_loss,
+            target=p.target,
+            sold_price=exit_price,
+            pnl_after_trade=pnl,
+        )
+        self.store.append_trade(trade)
+        self.positions = []
+        self.store.write_positions([])
+        self.logger.info(f"exit {p.symbol} @ {exit_price:.2f} pnl={pnl:.2f} reason={reason}")
+
+    def _exit_all(self, reason: str) -> None:
+        if not self.positions:
+            return
+        token = self._next_token().token
+        p = self.positions[0]
+        try:
+            groww = self.broker.client(token)
+            payload = self.broker.get_ltp(token, groww.SEGMENT_FNO, (p.symbol,))
+            ltp = self._parse_ltp(payload, p.symbol)
+            self._close_position(ltp, reason)
+        except Exception as exc:  # noqa: BLE001
+            self.tokens.mark_failed(token, str(exc))
+            self.logger.info(f"forced_exit_error {token_preview(token)} {exc}")
+
+    def _parse_ltp(self, payload: Any, symbol: str) -> float:
+        """Single accepted structure: list of rows with symbol + ltp fields."""
+        if not isinstance(payload, list):
+            raise RuntimeError("Unexpected LTP payload type; expected list")
+        for row in payload:
+            if not isinstance(row, dict):
                 continue
-            self._close_position(position, ltp)
-            self._positions.remove(position)
-        self._storage.write_portfolio(self._positions)
+            sym = row.get("exchange_trading_symbol") or row.get("symbol")
+            if sym == symbol and row.get("ltp") is not None:
+                return float(row["ltp"])
+        raise RuntimeError(f"LTP not found for {symbol}")
+
+    def _select_option_from_instruments(self, underlying_symbol: str, underlying_ltp: float, direction: str) -> OptionContract:
+        if self._book is None:
+            raise RuntimeError("Instrument book unavailable")
+
+        underlying_plain = "NIFTY" if underlying_symbol == "NSE_NIFTY" else "BANKNIFTY"
+        desired_opt = "CE" if direction == "up" else "PE"
+        expiry = self._resolve_expiry(underlying_plain)
+        rows = self._filter_option_rows(underlying_plain, expiry, desired_opt)
+        if not rows:
+            raise RuntimeError(f"No {desired_opt} options found for {underlying_plain} {expiry}")
+
+        rows.sort(key=lambda r: abs(float(r["strike"]) - underlying_ltp))
+        selected = rows[:20][0]
+        return OptionContract(
+            symbol=str(selected["symbol"]),
+            strike=float(selected["strike"]),
+            option_type=desired_opt,
+            expiry=expiry,
+        )
+
+    def _resolve_expiry(self, underlying_plain: str) -> str:
+        if self._book is None:
+            raise RuntimeError("Instrument book unavailable")
+
+        today = now_ist().date()
+        expiries: list[date] = []
+        for row in self._book.rows:
+            if (row.get("underlying") or "").upper() != underlying_plain:
+                continue
+            expiry_txt = str(row.get("expiry") or row.get("expiry_date") or "")
+            dt = self._parse_date(expiry_txt)
+            if dt and dt >= today:
+                expiries.append(dt)
+
+        if not expiries:
+            raise RuntimeError(f"No future expiries found for {underlying_plain}")
+
+        uniq = sorted(set(expiries))
+        if underlying_plain == "BANKNIFTY":
+            monthly = self._monthly_expiries(uniq)
+            if not monthly:
+                raise RuntimeError("BANKNIFTY monthly expiry not found")
+            return monthly[0].isoformat()
+        return uniq[0].isoformat()
+
+    def _monthly_expiries(self, expiries: list[date]) -> list[date]:
+        by_month: dict[tuple[int, int], date] = {}
+        for ex in expiries:
+            key = (ex.year, ex.month)
+            by_month[key] = max(ex, by_month.get(key, ex))
+        return sorted(by_month.values())
+
+    def _filter_option_rows(self, underlying_plain: str, expiry: str, option_type: str) -> list[dict[str, Any]]:
+        assert self._book is not None
+        out: list[dict[str, Any]] = []
+        for row in self._book.rows:
+            row_under = (row.get("underlying") or "").upper()
+            row_exp = str(row.get("expiry") or row.get("expiry_date") or "")
+            row_type = str(row.get("option_type") or row.get("instrument_type") or "").upper()
+            symbol = row.get("exchange_trading_symbol") or row.get("symbol")
+            strike = row.get("strike") or row.get("strike_price")
+            if row_under != underlying_plain:
+                continue
+            if not symbol or strike is None:
+                continue
+            if self._normalize_date(row_exp) != expiry:
+                continue
+            if row_type != option_type:
+                continue
+            out.append({"symbol": symbol, "strike": float(strike)})
+        return out
+
+    def _normalize_date(self, value: str) -> str:
+        dt = self._parse_date(value)
+        if dt is None:
+            return ""
+        return dt.isoformat()
+
+    def _parse_date(self, value: str) -> date | None:
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d%b%Y"):
+            try:
+                return datetime.strptime(value, fmt).date()
+            except Exception:  # noqa: BLE001
+                continue
+        return None
