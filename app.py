@@ -23,7 +23,6 @@ st.caption("Index + Weekly + Monthly F&O • Paper Trading • Multi-Token")
 def init_state():
     defaults = {
         "tokens": {},
-        "active_tab": 0,
         "last_refresh": 0.0,
         "trade_log": [],
         "error_log": [],
@@ -40,14 +39,19 @@ init_state()
 # =========================
 with st.sidebar:
     st.header("🔑 Groww Tokens (Max 5)")
+
+    temp_tokens = {}
+
     for i in range(5):
         token = st.text_area(
             f"Token {i+1}",
-            key=f"token_{i}",
+            key=f"token_input_{i}",
             height=80,
         )
         if token.strip():
-            st.session_state.tokens[i] = token.strip()
+            temp_tokens[i] = token.strip()
+
+    st.session_state.tokens = temp_tokens
 
     refresh_interval = st.number_input(
         "Refresh Interval (seconds)",
@@ -66,18 +70,28 @@ if now - st.session_state.last_refresh >= refresh_interval:
     st.rerun()
 
 # =========================
+# NO TOKEN GUARD (IMPORTANT)
+# =========================
+if not st.session_state.tokens:
+    st.info("👈 Paste at least one Groww token to start")
+    st.stop()
+
+# =========================
 # TOKEN TABS
 # =========================
-tabs = st.tabs([f"Token {i+1}" for i in st.session_state.tokens.keys()])
+tab_labels = [f"Token {i+1}" for i in st.session_state.tokens.keys()]
+tabs = st.tabs(tab_labels)
 
-for tab_index, token_key in enumerate(st.session_state.tokens):
-    with tabs[tab_index]:
+for tab_idx, token_key in enumerate(st.session_state.tokens):
+    with tabs[tab_idx]:
         token = st.session_state.tokens[token_key]
 
         try:
             groww = GrowwAPI(token)
+            st.success("Groww API initialized")
         except Exception as e:
             st.error("Invalid token")
+            st.session_state.error_log.append(str(e))
             continue
 
         # =========================
@@ -93,60 +107,61 @@ for tab_index, token_key in enumerate(st.session_state.tokens):
                 [{"Symbol": k, "LTP": v} for k, v in index_ltp.items()]
             )
         except Exception as e:
-            st.session_state.error_log.append(str(e))
             st.error(e)
+            st.session_state.error_log.append(str(e))
 
         # =========================
-        # WEEKLY OPTION LTP
+        # WEEKLY OPTION LTP (CONFIRMED LOGIC)
         # =========================
         st.subheader("🧾 Weekly Option LTP")
         weekly_symbol = st.text_input(
             "Weekly Option Symbol",
             value="NIFTY2621026400CE",
-            key=f"weekly_{tab_index}",
+            key=f"weekly_{tab_idx}",
         )
 
         try:
             quote = groww.get_quote(
-                exchange=groww.EXCHANGE_NSE,
-                segment=groww.SEGMENT_FNO,
-                trading_symbol=weekly_symbol,
+                groww.EXCHANGE_NSE,
+                groww.SEGMENT_FNO,
+                weekly_symbol,
             )
             st.table(
                 [{"Symbol": weekly_symbol, "LTP": quote.get("last_price")}]
             )
         except Exception as e:
-            st.session_state.error_log.append(str(e))
             st.error(e)
+            st.session_state.error_log.append(str(e))
 
         # =========================
-        # MONTHLY OPTION MULTI-LTP
+        # MONTHLY OPTIONS MULTI-LTP
         # =========================
         st.subheader("📈 Monthly Options (Multi-LTP)")
         monthly_symbols = st.text_area(
             "Monthly Symbols (comma separated)",
             value="NSE_NIFTY25JAN24500CE,NSE_NIFTY25JAN24500PE",
-            key=f"monthly_{tab_index}",
+            key=f"monthly_{tab_idx}",
         )
 
         try:
             symbols = tuple(s.strip() for s in monthly_symbols.split(",") if s.strip())
-            monthly_ltp = groww.get_ltp(
-                segment=groww.SEGMENT_FNO,
-                exchange_trading_symbols=symbols,
-            )
-            st.table(
-                [{"Symbol": k, "LTP": v} for k, v in monthly_ltp.items()]
-            )
+            if symbols:
+                monthly_ltp = groww.get_ltp(
+                    segment=groww.SEGMENT_FNO,
+                    exchange_trading_symbols=symbols,
+                )
+                st.table(
+                    [{"Symbol": k, "LTP": v} for k, v in monthly_ltp.items()]
+                )
         except Exception as e:
-            st.session_state.error_log.append(str(e))
             st.error(e)
+            st.session_state.error_log.append(str(e))
 
         # =========================
-        # PAPER TRADE ENTRY
+        # PAPER TRADE
         # =========================
         st.subheader("🧠 Paper Trade")
-        with st.form(f"trade_form_{tab_index}"):
+        with st.form(f"trade_form_{tab_idx}"):
             symbol = st.text_input("Symbol")
             qty = st.number_input("Quantity", min_value=1, value=1)
             price = st.number_input("Price", min_value=0.0)
@@ -167,7 +182,7 @@ for tab_index, token_key in enumerate(st.session_state.tokens):
                 st.success("Paper trade executed")
 
 # =========================
-# LOGS SECTION
+# LOGS
 # =========================
 st.divider()
 st.subheader("🧾 Trade Logs")
@@ -177,7 +192,7 @@ st.subheader("🚨 Error Logs")
 st.table([{"Error": e} for e in st.session_state.error_log[-50:]])
 
 # =========================
-# PNL CALCULATION
+# PNL
 # =========================
 st.subheader("📊 PnL Summary")
 pnl = 0.0
