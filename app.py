@@ -4,18 +4,18 @@ import time
 from datetime import datetime
 from growwapi import GrowwAPI
 
-# =========================
-# CONFIG (LOCKED)
-# =========================
+# =========================================================
+# CONFIG (UI LOCKED)
+# =========================================================
 st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
 st.title("🚀 Groww Live Paper Trading Bot")
 
 REFRESH_INTERVAL = 5
 PAPER_CAPITAL = 50000.0
 
-# =========================
+# =========================================================
 # SESSION STATE
-# =========================
+# =========================================================
 if "tokens" not in st.session_state:
     st.session_state.tokens = ["", "", "", "", ""]
 
@@ -25,9 +25,9 @@ if "bot_running" not in st.session_state:
 if "errors" not in st.session_state:
     st.session_state.errors = []
 
-# =========================
+# =========================================================
 # SIDEBAR (LOCKED)
-# =========================
+# =========================================================
 st.sidebar.header("🔑 Groww Tokens")
 
 for i in range(5):
@@ -51,9 +51,9 @@ if c2.button("⏹ Stop Bot"):
 
 st.sidebar.caption("Auto refresh every 5 seconds")
 
-# =========================
+# =========================================================
 # AUTO REFRESH (SAFE)
-# =========================
+# =========================================================
 now = time.time()
 last = st.session_state.get("last_refresh", 0)
 if now - last >= REFRESH_INTERVAL:
@@ -61,9 +61,9 @@ if now - last >= REFRESH_INTERVAL:
     if st.session_state.bot_running:
         st.rerun()
 
-# =========================
+# =========================================================
 # INIT GROWW (TOKEN 1)
-# =========================
+# =========================================================
 groww = None
 if st.session_state.bot_running and valid_tokens:
     try:
@@ -71,33 +71,37 @@ if st.session_state.bot_running and valid_tokens:
     except Exception as e:
         st.session_state.errors.append(str(e))
 
-# =========================
-# TOKEN 1 – LIVE INDEX + BALANCE
-# =========================
+# =========================================================
+# TOKEN 1 — LIVE CASH LTP + BALANCE
+# =========================================================
 index_ltp_store = {}
 groww_balance = None
 
 if groww:
     try:
-        # ✅ CORRECT SEGMENT + SYMBOL USAGE
-        ltp_response = groww.get_ltp(
-            "CASH",
-            ["NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY"]
+        # ✅ CASH SEGMENT (CORRECT SDK USAGE)
+        ltp_resp = groww.get_ltp(
+            segment=groww.SEGMENT_CASH,
+            exchange_trading_symbols=(
+                "NSE_NIFTY",
+                "NSE_BANKNIFTY",
+                "NSE_FINNIFTY",
+            )
         )
 
-        for sym, data in ltp_response.items():
+        for sym, data in ltp_resp.items():
             index_ltp_store[sym.replace("NSE_", "")] = data["ltp"]
 
         # ✅ LIVE BALANCE
-        balance_resp = groww.get_available_margin_details()
-        groww_balance = balance_resp.get("clear_cash")
+        bal_resp = groww.get_available_margin_details()
+        groww_balance = bal_resp.get("clear_cash")
 
     except Exception as e:
         st.session_state.errors.append(str(e))
 
-# =========================
-# TABLE 1 – INDEX + ACCOUNT
-# =========================
+# =========================================================
+# TABLE 1 — INDEX + ACCOUNT
+# =========================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 
 index_df = pd.DataFrame(
@@ -123,26 +127,26 @@ with col_b:
         unsafe_allow_html=True,
     )
 
-# =========================
-# TABLE 2 – OPTIONS (LOCKED)
-# =========================
+# =========================================================
+# TABLE 2 — OPTIONS (LOCKED)
+# =========================================================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.info("Live option fetching will populate here (Token 2 / 3 / 4 cycles)")
 
-# =========================
-# TABLE 3 – TRADE HISTORY (LOCKED)
-# =========================
+# =========================================================
+# TABLE 3 — TRADE HISTORY (LOCKED)
+# =========================================================
 st.subheader("📜 Table 3: Trade History")
 st.info("Paper trades will appear here once execution logic is enabled")
 
-# =========================
+# =========================================================
 # ERROR LOGS
-# =========================
+# =========================================================
 st.subheader("🛑 Error Logs")
 
 if st.session_state.errors:
-    for e in st.session_state.errors[-5:]:
-        st.error(e)
+    for err in st.session_state.errors[-5:]:
+        st.error(err)
 else:
     st.success("No errors")
 
