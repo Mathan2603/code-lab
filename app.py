@@ -2,204 +2,150 @@ import streamlit as st
 import pandas as pd
 import time
 from datetime import datetime
+from growwapi import GrowwAPI
 
 # =========================
-# PAGE CONFIG
+# CONFIG
 # =========================
-st.set_page_config(
-    page_title="Groww Trading Bot",
-    layout="wide",
-)
+st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
+st.title("🚀 Groww Live Paper Trading Bot")
 
-st.title("🚀 Groww Trading Bot (Live System)")
-
-# =========================
-# AUTO REFRESH (5s SAFE)
-# =========================
-REFRESH_INTERVAL = 5  # seconds
-
-now = time.time()
-last_refresh = st.session_state.get("last_refresh", 0)
-
-if now - last_refresh >= REFRESH_INTERVAL:
-    st.session_state.last_refresh = now
-    st.rerun()
+REFRESH_INTERVAL = 5
+PAPER_CAPITAL = 50000.0
 
 # =========================
-# SESSION STATE INIT
+# SESSION STATE
 # =========================
 if "tokens" not in st.session_state:
     st.session_state.tokens = ["", "", "", "", ""]
 
+if "bot_running" not in st.session_state:
+    st.session_state.bot_running = False
+
 if "errors" not in st.session_state:
     st.session_state.errors = []
 
-if "paper_balance" not in st.session_state:
-    st.session_state.paper_balance = 100000.0  # paper trading capital
-
 # =========================
-# SIDEBAR – TOKENS
+# SIDEBAR
 # =========================
 st.sidebar.header("🔑 Groww Tokens")
 
 for i in range(5):
     st.session_state.tokens[i] = st.sidebar.text_input(
         f"Token {i+1}",
-        value=st.session_state.tokens[i],
         type="password",
+        value=st.session_state.tokens[i],
     )
 
 valid_tokens = [t for t in st.session_state.tokens if t.strip()]
 
 if len(valid_tokens) < 2:
-    st.sidebar.error("⚠️ Minimum 2 tokens required to run the bot")
+    st.sidebar.error("Minimum 2 tokens required")
+
+col_a, col_b = st.sidebar.columns(2)
+if col_a.button("▶ Start Bot"):
+    st.session_state.bot_running = True
+
+if col_b.button("⏹ Stop Bot"):
+    st.session_state.bot_running = False
+
+st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================
-# BALANCE MODE SELECT
+# AUTO REFRESH
 # =========================
-st.sidebar.header("💰 Trading Mode")
-
-balance_mode = st.sidebar.radio(
-    "Select Balance Type",
-    ["Paper Trade Balance", "Groww Balance (Real)"],
-)
-
-st.sidebar.caption("⏱ Auto refresh every 5 seconds")
+now = time.time()
+last = st.session_state.get("last_refresh", 0)
+if now - last >= REFRESH_INTERVAL:
+    st.session_state.last_refresh = now
+    if st.session_state.bot_running:
+        st.rerun()
 
 # =========================
-# BALANCE RESOLUTION
+# INIT GROWW (TOKEN 1)
 # =========================
-if balance_mode == "Paper Trade Balance":
-    available_funds = st.session_state.paper_balance
-else:
-    # REAL GROWW BALANCE (from groww.get_available_margin_details())
-    # This will be fetched live in Token-1 cycle later
-    available_funds = -3055.63  # LIVE VALUE CONFIRMED BY YOU
+groww = None
+if st.session_state.bot_running and valid_tokens:
+    try:
+        groww = GrowwAPI(valid_tokens[0])
+    except Exception as e:
+        st.session_state.errors.append(str(e))
 
 # =========================
-# TABS
+# TOKEN 1 – LIVE FETCH
 # =========================
-st.tabs(["Token 1", "Token 2", "Token 3", "Token 4", "Token 5"])
+index_data = {}
+portfolio_data = []
+groww_balance = None
+
+if groww:
+    try:
+        # Index LTPs
+        ltp_data = groww.get_ltp(
+            exchange="NSE",
+            segment="CASH",
+            symbols=["NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY"]
+        )
+        for k, v in ltp_data.items():
+            index_data[k.replace("NSE_", "")] = v["ltp"]
+
+        # Portfolio
+        portfolio_data = groww.get_portfolio()
+
+        # Balance
+        bal = groww.get_available_margin_details()
+        groww_balance = bal.get("clear_cash")
+
+    except Exception as e:
+        st.session_state.errors.append(str(e))
 
 # =========================
-# LIVE INDEX LTP STORE (NO DUPLICATES)
-# =========================
-index_ltp_store = {
-    "NIFTY": 25436.25,
-    "BANKNIFTY": 58456.80,
-    "FINNIFTY": 21540.10,
-}
-
-index_df = pd.DataFrame(
-    [{"Symbol": k, "LTP": v} for k, v in index_ltp_store.items()]
-)
-
-# =========================
-# LIVE OPTIONS LTP STORE (NO DUPLICATES)
-# =========================
-options_ltp_store = {
-    "NIFTY26FEB26000CE": 152.5,
-    "NIFTY26FEB25900PE": 98.4,
-    "BANKNIFTY26FEB58500CE": 210.3,
-}
-
-options_df = pd.DataFrame(
-    [{"Symbol": k, "LTP": v} for k, v in options_ltp_store.items()]
-)
-
-# =========================
-# TRADE HISTORY (IMMUTABLE ROWS)
-# =========================
-trade_history_store = {
-    1: {
-        "Symbol": "NIFTY26FEB26000CE",
-        "Buy Price": 120.0,
-        "Buy Lot": 1,
-        "Dynamic SL": 90.0,
-        "Live / Sold Price": 152.5,
-        "Order Status": "OPEN",
-    },
-    2: {
-        "Symbol": "BANKNIFTY26FEB58500PE",
-        "Buy Price": 180.0,
-        "Buy Lot": 1,
-        "Dynamic SL": 140.0,
-        "Live / Sold Price": 0.0,
-        "Order Status": "CLOSED",
-    },
-}
-
-trade_df = pd.DataFrame([
-    {"S.No": k, **v} for k, v in trade_history_store.items()
-])
-
-# =========================
-# P&L CALCULATION (LIVE LOGIC BASE)
-# =========================
-overall_pnl = -2450.75  # will be calculated live later
-
-# =========================
-# TABLE 1 – INDEX + ACCOUNT
+# TABLE 1 – INDEX + BALANCE
 # =========================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 
-c1, c2 = st.columns([2, 1])
+df_index = pd.DataFrame(
+    [{"Symbol": k, "LTP": v} for k, v in index_data.items()]
+)
 
+c1, c2 = st.columns([2, 1])
 with c1:
-    st.dataframe(index_df, use_container_width=True)
+    st.dataframe(df_index, use_container_width=True)
 
 with c2:
-    fund_color = "green" if available_funds >= 0 else "red"
-    pnl_color = "green" if overall_pnl >= 0 else "red"
-
     st.markdown(
         f"""
-        **Balance Mode:** `{balance_mode}`  
+        **Paper Trade Capital:**  
+        <span style="color:green;font-weight:bold;">₹ {PAPER_CAPITAL}</span>
 
-        **Available Funds:**  
-        <span style="color:{fund_color}; font-weight:bold;">
-        ₹ {available_funds}
-        </span>  
-
-        **Overall P&L:**  
-        <span style="color:{pnl_color}; font-weight:bold;">
-        ₹ {overall_pnl}
+        **Groww Available Balance (LIVE):**  
+        <span style="color:{'green' if (groww_balance or 0) >= 0 else 'red'};font-weight:bold;">
+        ₹ {groww_balance if groww_balance is not None else '—'}
         </span>
         """,
         unsafe_allow_html=True,
     )
 
 # =========================
-# TABLE 2 – OPTIONS LTP
+# TABLE 2 – OPTIONS (LIVE FEED PLACEHOLDER)
 # =========================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
-st.dataframe(options_df, use_container_width=True)
+st.info("Live option fetching will populate here (Token 2 / 3 / 4 cycles)")
 
 # =========================
 # TABLE 3 – TRADE HISTORY
 # =========================
 st.subheader("📜 Table 3: Trade History")
-
-def status_color(val):
-    return "color: green" if val == "OPEN" else "color: red"
-
-st.dataframe(
-    trade_df.style.applymap(status_color, subset=["Order Status"]),
-    use_container_width=True
-)
+st.info("Paper trades will appear here once execution logic is enabled")
 
 # =========================
 # ERROR LOGS
 # =========================
 st.subheader("🛑 Error Logs")
-
 if st.session_state.errors:
-    for err in st.session_state.errors:
-        st.error(err)
+    for e in st.session_state.errors[-5:]:
+        st.error(e)
 else:
     st.success("No errors")
 
-# =========================
-# FOOTER
-# =========================
-st.caption(f"Last refreshed at {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')}")
