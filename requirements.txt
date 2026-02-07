@@ -2,3 +2,4 @@ streamlit
 growwapi
 pyotp
 pandas
+streamlit-autorefresh
