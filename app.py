@@ -5,7 +5,7 @@ from datetime import datetime
 from growwapi import GrowwAPI
 
 # =========================
-# CONFIG
+# CONFIG (LOCKED)
 # =========================
 st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
 st.title("🚀 Groww Live Paper Trading Bot")
@@ -26,7 +26,7 @@ if "errors" not in st.session_state:
     st.session_state.errors = []
 
 # =========================
-# SIDEBAR (LOCKED UI)
+# SIDEBAR (LOCKED)
 # =========================
 st.sidebar.header("🔑 Groww Tokens")
 
@@ -52,7 +52,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================
-# AUTO REFRESH
+# AUTO REFRESH (SAFE)
 # =========================
 now = time.time()
 last = st.session_state.get("last_refresh", 0)
@@ -72,29 +72,25 @@ if st.session_state.bot_running and valid_tokens:
         st.session_state.errors.append(str(e))
 
 # =========================
-# TOKEN 1 – LIVE DATA (CORRECT API USAGE)
+# TOKEN 1 – LIVE INDEX + BALANCE
 # =========================
 index_ltp_store = {}
 groww_balance = None
-portfolio = []
 
 if groww:
     try:
-        # ✅ Correct get_ltp usage (NO keyword args)
-        ltp_resp = groww.get_ltp(
+        # ✅ CORRECT SEGMENT + SYMBOL USAGE
+        ltp_response = groww.get_ltp(
             "CASH",
             ["NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY"]
         )
 
-        for symbol, data in ltp_resp.items():
-            index_ltp_store[symbol.replace("NSE_", "")] = data["ltp"]
+        for sym, data in ltp_response.items():
+            index_ltp_store[sym.replace("NSE_", "")] = data["ltp"]
 
-        # Portfolio
-        portfolio = groww.get_portfolio()
-
-        # Balance
-        bal = groww.get_available_margin_details()
-        groww_balance = bal.get("clear_cash")
+        # ✅ LIVE BALANCE
+        balance_resp = groww.get_available_margin_details()
+        groww_balance = balance_resp.get("clear_cash")
 
     except Exception as e:
         st.session_state.errors.append(str(e))
@@ -128,13 +124,13 @@ with col_b:
     )
 
 # =========================
-# TABLE 2 – OPTIONS
+# TABLE 2 – OPTIONS (LOCKED)
 # =========================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.info("Live option fetching will populate here (Token 2 / 3 / 4 cycles)")
 
 # =========================
-# TABLE 3 – TRADE HISTORY
+# TABLE 3 – TRADE HISTORY (LOCKED)
 # =========================
 st.subheader("📜 Table 3: Trade History")
 st.info("Paper trades will appear here once execution logic is enabled")
@@ -143,6 +139,7 @@ st.info("Paper trades will appear here once execution logic is enabled")
 # ERROR LOGS
 # =========================
 st.subheader("🛑 Error Logs")
+
 if st.session_state.errors:
     for e in st.session_state.errors[-5:]:
         st.error(e)
