@@ -3,9 +3,10 @@ import pandas as pd
 import time
 from datetime import datetime
 from growwapi import GrowwAPI
+import matplotlib.pyplot as plt
 
 # =========================================================
-# CONFIG (LOCKED UI)
+# CONFIG (UI + TOKEN 1 LOCKED)
 # =========================================================
 st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
 st.title("🚀 Groww Live Paper Trading Bot")
@@ -24,6 +25,41 @@ def extract_ltp(value):
     return None
 
 # =========================================================
+# BACKTESTING HELPERS (FROM OFFICIAL DOCS)
+# =========================================================
+def get_backtest_expiries(groww, underlying, year=None, month=None):
+    return groww.get_expiries(
+        exchange=groww.EXCHANGE_NSE,
+        underlying_symbol=underlying,
+        year=year,
+        month=month
+    )
+
+def get_backtest_contracts(groww, underlying, expiry_date):
+    return groww.get_contracts(
+        exchange=groww.EXCHANGE_NSE,
+        underlying_symbol=underlying,
+        expiry_date=expiry_date
+    )
+
+def get_historical_candles(
+    groww,
+    groww_symbol,
+    start_time,
+    end_time,
+    interval="5minute",
+    segment=None
+):
+    return groww.get_historical_candles(
+        exchange=groww.EXCHANGE_NSE,
+        segment=segment or groww.SEGMENT_FNO,
+        groww_symbol=groww_symbol,
+        start_time=start_time,
+        end_time=end_time,
+        candle_interval=interval
+    )
+
+# =========================================================
 # SESSION STATE
 # =========================================================
 if "tokens" not in st.session_state:
@@ -35,14 +71,8 @@ if "bot_running" not in st.session_state:
 if "errors" not in st.session_state:
     st.session_state.errors = []
 
-if "cycle_counter" not in st.session_state:
-    st.session_state.cycle_counter = 0
-
 if "index_ltp" not in st.session_state:
     st.session_state.index_ltp = {}
-
-if "options_ltp" not in st.session_state:
-    st.session_state.options_ltp = {}
 
 # =========================================================
 # SIDEBAR (LOCKED)
@@ -65,25 +95,24 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================================================
-# AUTO REFRESH (LOCKED)
+# AUTO REFRESH
 # =========================================================
 now = time.time()
 last = st.session_state.get("last_refresh", 0)
 if now - last >= REFRESH_INTERVAL:
     st.session_state.last_refresh = now
     if st.session_state.bot_running:
-        st.session_state.cycle_counter += 1
         st.rerun()
 
 # =========================================================
-# INIT GROWW (TOKEN-1 ONLY)
+# INIT GROWW (TOKEN 1 ONLY)
 # =========================================================
 groww = None
 if st.session_state.bot_running and valid_tokens:
     groww = GrowwAPI(valid_tokens[0])
 
 # =========================================================
-# TOKEN-1 — INDEX LTP + BALANCE (LOCKED & WORKING)
+# TOKEN 1 — INDEX LTP + BALANCE (LOCKED)
 # =========================================================
 groww_balance = None
 
@@ -106,64 +135,35 @@ if groww:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# TOKEN-2 — MONTHLY FNO (FIXED, REAL)
-# =========================================================
-if groww and "NIFTY" in st.session_state.index_ltp:
-    try:
-        nifty_spot = st.session_state.index_ltp["NIFTY"]
-        atm = round(nifty_spot / 50) * 50
-
-        # ✅ CORRECT Groww API USAGE (NO segment param)
-        expiries = groww.get_expiries(
-            exchange=groww.EXCHANGE_NSE,
-            trading_symbol="NIFTY"
-        )
-        monthly_expiry = expiries[0]
-
-        contracts = groww.get_contracts(
-            exchange=groww.EXCHANGE_NSE,
-            segment=groww.SEGMENT_FNO,
-            trading_symbol="NIFTY",
-            expiry=monthly_expiry
-        )
-
-        symbols = []
-        for c in contracts:
-            if abs(c["strike_price"] - atm) <= 100:
-                symbols.append(c["trading_symbol"])
-
-        if symbols:
-            resp = groww.get_ltp(
-                segment=groww.SEGMENT_FNO,
-                exchange_trading_symbols=tuple(symbols)
-            )
-
-            for sym, raw in resp.items():
-                ltp = extract_ltp(raw)
-                if ltp is not None:
-                    st.session_state.options_ltp[sym] = ltp
-
-    except Exception as e:
-        st.session_state.errors.append(str(e))
-
-# =========================================================
 # UI TABLES (LOCKED)
 # =========================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
-st.dataframe(
-    pd.DataFrame(
-        [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
-    ),
-    use_container_width=True,
-)
+
+colA, colB = st.columns([2, 1])
+with colA:
+    st.dataframe(
+        pd.DataFrame(
+            [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
+        ),
+        use_container_width=True,
+    )
+
+with colB:
+    st.markdown(
+        f"""
+        **Paper Trade Capital:**  
+        <span style="color:green;font-weight:bold;">₹ {PAPER_CAPITAL}</span>
+
+        **Groww Available Balance (LIVE):**  
+        <span style="color:{'green' if (groww_balance or 0) >= 0 else 'red'};font-weight:bold;">
+        ₹ {groww_balance if groww_balance is not None else '—'}
+        </span>
+        """,
+        unsafe_allow_html=True,
+    )
 
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
-st.dataframe(
-    pd.DataFrame(
-        [{"Symbol": k, "LTP": v} for k, v in st.session_state.options_ltp.items()]
-    ),
-    use_container_width=True,
-)
+st.info("FNO LTP engine will be enabled after expiry resolver confirmation")
 
 st.subheader("📜 Table 3: Trade History")
 st.info("Paper trades will appear here once execution logic is enabled")
