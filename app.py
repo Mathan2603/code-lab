@@ -127,7 +127,7 @@ index_df = pd.DataFrame(
 col_a, col_b = st.columns([2, 1])
 
 with col_a:
-    st.dataframe(index_df, use_container_width=True)
+    st.dataframe(index_df, width=True)
 
 with col_b:
     st.markdown(
