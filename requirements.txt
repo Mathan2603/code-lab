@@ -3,3 +3,4 @@ growwapi
 pyotp
 pandas
 streamlit-autorefresh
+matplotlib
