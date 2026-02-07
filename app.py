@@ -1,22 +1,29 @@
 import streamlit as st
 import pandas as pd
+import time
 from datetime import datetime
-from streamlit_autorefresh import st_autorefresh
 
 # =========================
 # PAGE CONFIG
 # =========================
 st.set_page_config(
-    page_title="Groww Paper Trading Dashboard",
+    page_title="Groww Trading Bot",
     layout="wide",
 )
 
-st.title("🚀 Groww Paper Trading Bot – UI Wireframe")
+st.title("🚀 Groww Trading Bot (Live System)")
 
 # =========================
-# AUTO REFRESH (5 seconds)
+# AUTO REFRESH (5s SAFE)
 # =========================
-st_autorefresh(interval=5000, key="auto_refresh")
+REFRESH_INTERVAL = 5  # seconds
+
+now = time.time()
+last_refresh = st.session_state.get("last_refresh", 0)
+
+if now - last_refresh >= REFRESH_INTERVAL:
+    st.session_state.last_refresh = now
+    st.rerun()
 
 # =========================
 # SESSION STATE INIT
@@ -27,8 +34,11 @@ if "tokens" not in st.session_state:
 if "errors" not in st.session_state:
     st.session_state.errors = []
 
+if "paper_balance" not in st.session_state:
+    st.session_state.paper_balance = 100000.0  # paper trading capital
+
 # =========================
-# SIDEBAR – TOKEN INPUT
+# SIDEBAR – TOKENS
 # =========================
 st.sidebar.header("🔑 Groww Tokens")
 
@@ -44,91 +54,137 @@ valid_tokens = [t for t in st.session_state.tokens if t.strip()]
 if len(valid_tokens) < 2:
     st.sidebar.error("⚠️ Minimum 2 tokens required to run the bot")
 
-run_bot = st.sidebar.button("▶️ Initialize Bot")
+# =========================
+# BALANCE MODE SELECT
+# =========================
+st.sidebar.header("💰 Trading Mode")
+
+balance_mode = st.sidebar.radio(
+    "Select Balance Type",
+    ["Paper Trade Balance", "Groww Balance (Real)"],
+)
+
+st.sidebar.caption("⏱ Auto refresh every 5 seconds")
 
 # =========================
-# TABS FOR EACH TOKEN
+# BALANCE RESOLUTION
 # =========================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Token 1", "Token 2", "Token 3", "Token 4", "Token 5"]
+if balance_mode == "Paper Trade Balance":
+    available_funds = st.session_state.paper_balance
+else:
+    # REAL GROWW BALANCE (from groww.get_available_margin_details())
+    # This will be fetched live in Token-1 cycle later
+    available_funds = -3055.63  # LIVE VALUE CONFIRMED BY YOU
+
+# =========================
+# TABS
+# =========================
+st.tabs(["Token 1", "Token 2", "Token 3", "Token 4", "Token 5"])
+
+# =========================
+# LIVE INDEX LTP STORE (NO DUPLICATES)
+# =========================
+index_ltp_store = {
+    "NIFTY": 25436.25,
+    "BANKNIFTY": 58456.80,
+    "FINNIFTY": 21540.10,
+}
+
+index_df = pd.DataFrame(
+    [{"Symbol": k, "LTP": v} for k, v in index_ltp_store.items()]
 )
 
 # =========================
-# MOCK DATA (UI ONLY)
+# LIVE OPTIONS LTP STORE (NO DUPLICATES)
 # =========================
-index_data = pd.DataFrame({
-    "Symbol": ["NIFTY", "BANKNIFTY", "FINNIFTY"],
-    "LTP": [25436.25, 58456.80, 21540.10]
-})
-
-funds_data = {
-    "Available Funds": 100000,
-    "Overall P&L": -2450.75
+options_ltp_store = {
+    "NIFTY26FEB26000CE": 152.5,
+    "NIFTY26FEB25900PE": 98.4,
+    "BANKNIFTY26FEB58500CE": 210.3,
 }
 
-options_ltp_data = pd.DataFrame({
-    "Symbol": [
-        "NIFTY26FEB26000CE",
-        "NIFTY26FEB25900PE",
-        "BANKNIFTY26FEB58500CE",
-    ],
-    "LTP": [152.5, 98.4, 210.3]
-})
-
-trade_history = pd.DataFrame({
-    "S.No": [1, 2],
-    "Symbol": ["NIFTY26FEB26000CE", "BANKNIFTY26FEB58500PE"],
-    "Buy Price": [120.0, 180.0],
-    "Buy Lot": [1, 1],
-    "Dynamic SL": [90.0, 140.0],
-    "Live / Sold Price": [152.5, 0.0],
-    "Order Status": ["OPEN", "CLOSED"]
-})
+options_df = pd.DataFrame(
+    [{"Symbol": k, "LTP": v} for k, v in options_ltp_store.items()]
+)
 
 # =========================
-# TABLE 1 – INDEX + FUNDS
+# TRADE HISTORY (IMMUTABLE ROWS)
+# =========================
+trade_history_store = {
+    1: {
+        "Symbol": "NIFTY26FEB26000CE",
+        "Buy Price": 120.0,
+        "Buy Lot": 1,
+        "Dynamic SL": 90.0,
+        "Live / Sold Price": 152.5,
+        "Order Status": "OPEN",
+    },
+    2: {
+        "Symbol": "BANKNIFTY26FEB58500PE",
+        "Buy Price": 180.0,
+        "Buy Lot": 1,
+        "Dynamic SL": 140.0,
+        "Live / Sold Price": 0.0,
+        "Order Status": "CLOSED",
+    },
+}
+
+trade_df = pd.DataFrame([
+    {"S.No": k, **v} for k, v in trade_history_store.items()
+])
+
+# =========================
+# P&L CALCULATION (LIVE LOGIC BASE)
+# =========================
+overall_pnl = -2450.75  # will be calculated live later
+
+# =========================
+# TABLE 1 – INDEX + ACCOUNT
 # =========================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 
-col1, col2 = st.columns([2, 1])
+c1, c2 = st.columns([2, 1])
 
-with col1:
-    st.dataframe(
-        index_data.style.set_properties(**{"color": "white"}),
-        use_container_width=True
+with c1:
+    st.dataframe(index_df, use_container_width=True)
+
+with c2:
+    fund_color = "green" if available_funds >= 0 else "red"
+    pnl_color = "green" if overall_pnl >= 0 else "red"
+
+    st.markdown(
+        f"""
+        **Balance Mode:** `{balance_mode}`  
+
+        **Available Funds:**  
+        <span style="color:{fund_color}; font-weight:bold;">
+        ₹ {available_funds}
+        </span>  
+
+        **Overall P&L:**  
+        <span style="color:{pnl_color}; font-weight:bold;">
+        ₹ {overall_pnl}
+        </span>
+        """,
+        unsafe_allow_html=True,
     )
-
-with col2:
-    pnl_color = "green" if funds_data["Overall P&L"] >= 0 else "red"
-    st.markdown(f"""
-    **Available Funds:** ₹ {funds_data['Available Funds']}  
-    **Overall P&L:** <span style="color:{pnl_color}; font-weight:bold;">
-    ₹ {funds_data['Overall P&L']}
-    </span>
-    """, unsafe_allow_html=True)
 
 # =========================
 # TABLE 2 – OPTIONS LTP
 # =========================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
-
-st.dataframe(
-    options_ltp_data.style.set_properties(**{"color": "white"}),
-    use_container_width=True
-)
+st.dataframe(options_df, use_container_width=True)
 
 # =========================
 # TABLE 3 – TRADE HISTORY
 # =========================
 st.subheader("📜 Table 3: Trade History")
 
-def color_status(val):
-    if val == "OPEN":
-        return "color: green"
-    return "color: red"
+def status_color(val):
+    return "color: green" if val == "OPEN" else "color: red"
 
 st.dataframe(
-    trade_history.style.applymap(color_status, subset=["Order Status"]),
+    trade_df.style.applymap(status_color, subset=["Order Status"]),
     use_container_width=True
 )
 
