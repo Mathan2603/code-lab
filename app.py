@@ -72,14 +72,13 @@ if st.session_state.bot_running and valid_tokens:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# TOKEN 1 — LIVE CASH LTP + BALANCE
+# TOKEN 1 — LIVE CASH LTP + BALANCE (FIXED)
 # =========================================================
 index_ltp_store = {}
 groww_balance = None
 
 if groww:
     try:
-        # ✅ CASH SEGMENT (CORRECT SDK USAGE)
         ltp_resp = groww.get_ltp(
             segment=groww.SEGMENT_CASH,
             exchange_trading_symbols=(
@@ -90,7 +89,14 @@ if groww:
         )
 
         for sym, data in ltp_resp.items():
-            index_ltp_store[sym.replace("NSE_", "")] = data["ltp"]
+            # ✅ FIX: handle float OR dict
+            if isinstance(data, dict):
+                ltp = data.get("ltp")
+            else:
+                ltp = data
+
+            if ltp is not None:
+                index_ltp_store[sym.replace("NSE_", "")] = float(ltp)
 
         # ✅ LIVE BALANCE
         bal_resp = groww.get_available_margin_details()
