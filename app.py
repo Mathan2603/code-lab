@@ -1,169 +1,149 @@
-# app.py
 import streamlit as st
-import time
 import pandas as pd
-from growwapi import GrowwAPI
+from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
 
 # =========================
 # PAGE CONFIG
 # =========================
 st.set_page_config(
     page_title="Groww Paper Trading Dashboard",
-    layout="wide"
+    layout="wide",
 )
 
-st.title("📊 Groww Paper Trading Dashboard")
-st.caption("Index + Weekly + Monthly F&O • Auto-refresh")
+st.title("🚀 Groww Paper Trading Bot – UI Wireframe")
 
 # =========================
-# SESSION STATE
+# AUTO REFRESH (5 seconds)
 # =========================
-if "api" not in st.session_state:
-    st.session_state.api = None
-
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = 0
-
-if "error_logs" not in st.session_state:
-    st.session_state.error_logs = []
+st_autorefresh(interval=5000, key="auto_refresh")
 
 # =========================
-# SIDEBAR
+# SESSION STATE INIT
 # =========================
-with st.sidebar:
-    st.header("🔑 Groww Token")
-    token = st.text_area("Paste Groww Access Token", height=120)
+if "tokens" not in st.session_state:
+    st.session_state.tokens = ["", "", "", "", ""]
 
-    weekly_symbol = st.text_input(
-        "Weekly Option Symbol",
-        value="NIFTY2621026400CE"
+if "errors" not in st.session_state:
+    st.session_state.errors = []
+
+# =========================
+# SIDEBAR – TOKEN INPUT
+# =========================
+st.sidebar.header("🔑 Groww Tokens")
+
+for i in range(5):
+    st.session_state.tokens[i] = st.sidebar.text_input(
+        f"Token {i+1}",
+        value=st.session_state.tokens[i],
+        type="password",
     )
 
-    monthly_symbols = st.text_area(
-        "Monthly Option Symbols (comma separated)",
-        value="NSE_NIFTY25JAN24500CE,NSE_NIFTY25JAN24500PE"
-    )
+valid_tokens = [t for t in st.session_state.tokens if t.strip()]
 
-    refresh_sec = st.number_input(
-        "Refresh interval (seconds)",
-        min_value=2,
-        value=5
-    )
+if len(valid_tokens) < 2:
+    st.sidebar.error("⚠️ Minimum 2 tokens required to run the bot")
 
-    init = st.button("🚀 Initialize API")
+run_bot = st.sidebar.button("▶️ Initialize Bot")
 
 # =========================
-# INIT API
+# TABS FOR EACH TOKEN
 # =========================
-if init and token.strip():
-    try:
-        st.session_state.api = GrowwAPI(token.strip())
-        st.success("Groww API initialized successfully")
-    except Exception as e:
-        st.error(str(e))
-
-api = st.session_state.api
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Token 1", "Token 2", "Token 3", "Token 4", "Token 5"]
+)
 
 # =========================
-# AUTO REFRESH (SAFE)
+# MOCK DATA (UI ONLY)
 # =========================
-now = time.time()
-if now - st.session_state.last_refresh >= refresh_sec:
-    st.session_state.last_refresh = now
-    st.rerun()
+index_data = pd.DataFrame({
+    "Symbol": ["NIFTY", "BANKNIFTY", "FINNIFTY"],
+    "LTP": [25436.25, 58456.80, 21540.10]
+})
 
-# =========================
-# INDEX LTP
-# =========================
-st.subheader("📈 Index LTP")
+funds_data = {
+    "Available Funds": 100000,
+    "Overall P&L": -2450.75
+}
 
-if api:
-    try:
-        index_ltp = api.get_ltp(
-            segment=api.SEGMENT_CASH,
-            exchange_trading_symbols=(
-                "NSE_NIFTY",
-                "NSE_BANKNIFTY"
-            )
-        )
+options_ltp_data = pd.DataFrame({
+    "Symbol": [
+        "NIFTY26FEB26000CE",
+        "NIFTY26FEB25900PE",
+        "BANKNIFTY26FEB58500CE",
+    ],
+    "LTP": [152.5, 98.4, 210.3]
+})
 
-        df_index = pd.DataFrame([
-            {"Symbol": k, "LTP": v}
-            for k, v in index_ltp.items()
-        ])
-        st.dataframe(df_index, use_container_width=True)
-
-    except Exception as e:
-        st.error(str(e))
-        st.session_state.error_logs.append(str(e))
-else:
-    st.info("Initialize API")
+trade_history = pd.DataFrame({
+    "S.No": [1, 2],
+    "Symbol": ["NIFTY26FEB26000CE", "BANKNIFTY26FEB58500PE"],
+    "Buy Price": [120.0, 180.0],
+    "Buy Lot": [1, 1],
+    "Dynamic SL": [90.0, 140.0],
+    "Live / Sold Price": [152.5, 0.0],
+    "Order Status": ["OPEN", "CLOSED"]
+})
 
 # =========================
-# WEEKLY OPTION (QUOTE API)
+# TABLE 1 – INDEX + FUNDS
 # =========================
-st.subheader("📄 Weekly Option LTP")
+st.subheader("📊 Table 1: Index LTPs & Account Summary")
 
-if api:
-    try:
-        quote = api.get_quote(
-            exchange=api.EXCHANGE_NSE,
-            segment=api.SEGMENT_FNO,
-            trading_symbol=weekly_symbol.strip()
-        )
+col1, col2 = st.columns([2, 1])
 
-        st.metric(
-            label=weekly_symbol,
-            value=quote.get("last_price")
-        )
-
-    except Exception as e:
-        st.error(str(e))
-        st.session_state.error_logs.append(str(e))
-
-# =========================
-# MONTHLY OPTIONS (MULTI LTP)
-# =========================
-st.subheader("📊 Monthly Options (Multi-LTP)")
-
-if api:
-    try:
-        symbols = [
-            s.strip()
-            for s in monthly_symbols.split(",")
-            if s.strip()
-        ]
-
-        if symbols:
-            monthly_ltp = api.get_ltp(
-                segment=api.SEGMENT_FNO,
-                exchange_trading_symbols=tuple(symbols)
-            )
-
-            df_monthly = pd.DataFrame([
-                {"Symbol": k, "LTP": v}
-                for k, v in monthly_ltp.items()
-            ])
-            st.dataframe(df_monthly, use_container_width=True)
-        else:
-            st.info("Enter monthly symbols")
-
-    except Exception as e:
-        st.error(str(e))
-        st.session_state.error_logs.append(str(e))
-
-# =========================
-# LOGS
-# =========================
-st.subheader("🧾 Error Logs")
-
-if st.session_state.error_logs:
+with col1:
     st.dataframe(
-        pd.DataFrame(
-            st.session_state.error_logs[-20:],
-            columns=["Error"]
-        ),
+        index_data.style.set_properties(**{"color": "white"}),
         use_container_width=True
     )
+
+with col2:
+    pnl_color = "green" if funds_data["Overall P&L"] >= 0 else "red"
+    st.markdown(f"""
+    **Available Funds:** ₹ {funds_data['Available Funds']}  
+    **Overall P&L:** <span style="color:{pnl_color}; font-weight:bold;">
+    ₹ {funds_data['Overall P&L']}
+    </span>
+    """, unsafe_allow_html=True)
+
+# =========================
+# TABLE 2 – OPTIONS LTP
+# =========================
+st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
+
+st.dataframe(
+    options_ltp_data.style.set_properties(**{"color": "white"}),
+    use_container_width=True
+)
+
+# =========================
+# TABLE 3 – TRADE HISTORY
+# =========================
+st.subheader("📜 Table 3: Trade History")
+
+def color_status(val):
+    if val == "OPEN":
+        return "color: green"
+    return "color: red"
+
+st.dataframe(
+    trade_history.style.applymap(color_status, subset=["Order Status"]),
+    use_container_width=True
+)
+
+# =========================
+# ERROR LOGS
+# =========================
+st.subheader("🛑 Error Logs")
+
+if st.session_state.errors:
+    for err in st.session_state.errors:
+        st.error(err)
 else:
-    st.write("No errors")
+    st.success("No errors")
+
+# =========================
+# FOOTER
+# =========================
+st.caption(f"Last refreshed at {datetime.now().strftime('%H:%M:%S')}")
