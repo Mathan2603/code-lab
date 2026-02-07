@@ -26,7 +26,7 @@ if "errors" not in st.session_state:
     st.session_state.errors = []
 
 # =========================
-# SIDEBAR
+# SIDEBAR (LOCKED UI)
 # =========================
 st.sidebar.header("🔑 Groww Tokens")
 
@@ -42,11 +42,11 @@ valid_tokens = [t for t in st.session_state.tokens if t.strip()]
 if len(valid_tokens) < 2:
     st.sidebar.error("Minimum 2 tokens required")
 
-col_a, col_b = st.sidebar.columns(2)
-if col_a.button("▶ Start Bot"):
+c1, c2 = st.sidebar.columns(2)
+if c1.button("▶ Start Bot"):
     st.session_state.bot_running = True
 
-if col_b.button("⏹ Stop Bot"):
+if c2.button("⏹ Stop Bot"):
     st.session_state.bot_running = False
 
 st.sidebar.caption("Auto refresh every 5 seconds")
@@ -72,25 +72,25 @@ if st.session_state.bot_running and valid_tokens:
         st.session_state.errors.append(str(e))
 
 # =========================
-# TOKEN 1 – LIVE FETCH
+# TOKEN 1 – LIVE DATA (CORRECT API USAGE)
 # =========================
-index_data = {}
-portfolio_data = []
+index_ltp_store = {}
 groww_balance = None
+portfolio = []
 
 if groww:
     try:
-        # Index LTPs
-        ltp_data = groww.get_ltp(
-            exchange="NSE",
-            segment="CASH",
-            symbols=["NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY"]
+        # ✅ Correct get_ltp usage (NO keyword args)
+        ltp_resp = groww.get_ltp(
+            "CASH",
+            ["NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY"]
         )
-        for k, v in ltp_data.items():
-            index_data[k.replace("NSE_", "")] = v["ltp"]
+
+        for symbol, data in ltp_resp.items():
+            index_ltp_store[symbol.replace("NSE_", "")] = data["ltp"]
 
         # Portfolio
-        portfolio_data = groww.get_portfolio()
+        portfolio = groww.get_portfolio()
 
         # Balance
         bal = groww.get_available_margin_details()
@@ -100,19 +100,20 @@ if groww:
         st.session_state.errors.append(str(e))
 
 # =========================
-# TABLE 1 – INDEX + BALANCE
+# TABLE 1 – INDEX + ACCOUNT
 # =========================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 
-df_index = pd.DataFrame(
-    [{"Symbol": k, "LTP": v} for k, v in index_data.items()]
+index_df = pd.DataFrame(
+    [{"Symbol": k, "LTP": v} for k, v in index_ltp_store.items()]
 )
 
-c1, c2 = st.columns([2, 1])
-with c1:
-    st.dataframe(df_index, use_container_width=True)
+col_a, col_b = st.columns([2, 1])
 
-with c2:
+with col_a:
+    st.dataframe(index_df, use_container_width=True)
+
+with col_b:
     st.markdown(
         f"""
         **Paper Trade Capital:**  
@@ -127,7 +128,7 @@ with c2:
     )
 
 # =========================
-# TABLE 2 – OPTIONS (LIVE FEED PLACEHOLDER)
+# TABLE 2 – OPTIONS
 # =========================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.info("Live option fetching will populate here (Token 2 / 3 / 4 cycles)")
