@@ -5,7 +5,7 @@ from datetime import datetime
 from growwapi import GrowwAPI
 
 # =========================================================
-# CONFIG (LOCKED)
+# CONFIG (LOCKED UI)
 # =========================================================
 st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
 st.title("🚀 Groww Live Paper Trading Bot")
@@ -14,7 +14,7 @@ REFRESH_INTERVAL = 5
 PAPER_CAPITAL = 50000.0
 
 # =========================================================
-# SAFE LTP EXTRACTOR
+# SAFE LTP EXTRACTOR (MANDATORY)
 # =========================================================
 def extract_ltp(value):
     if isinstance(value, dict):
@@ -65,7 +65,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================================================
-# AUTO REFRESH
+# AUTO REFRESH (LOCKED)
 # =========================================================
 now = time.time()
 last = st.session_state.get("last_refresh", 0)
@@ -76,14 +76,14 @@ if now - last >= REFRESH_INTERVAL:
         st.rerun()
 
 # =========================================================
-# INIT GROWW
+# INIT GROWW (TOKEN-1 ONLY)
 # =========================================================
 groww = None
 if st.session_state.bot_running and valid_tokens:
     groww = GrowwAPI(valid_tokens[0])
 
 # =========================================================
-# TOKEN 1 — INDEX + BALANCE (LOCKED)
+# TOKEN-1 — INDEX LTP + BALANCE (LOCKED & WORKING)
 # =========================================================
 groww_balance = None
 
@@ -96,7 +96,7 @@ if groww:
 
         for sym, raw in ltp_resp.items():
             ltp = extract_ltp(raw)
-            if ltp:
+            if ltp is not None:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
 
         bal = groww.get_available_margin_details()
@@ -106,43 +106,42 @@ if groww:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# TOKEN 2 — MONTHLY FNO (REAL)
+# TOKEN-2 — MONTHLY FNO (FIXED, REAL)
 # =========================================================
-if groww and st.session_state.index_ltp:
+if groww and "NIFTY" in st.session_state.index_ltp:
     try:
-        nifty_spot = st.session_state.index_ltp.get("NIFTY")
-        if nifty_spot:
-            atm = round(nifty_spot / 50) * 50
+        nifty_spot = st.session_state.index_ltp["NIFTY"]
+        atm = round(nifty_spot / 50) * 50
 
-            expiries = groww.get_expiries(
-                exchange=groww.EXCHANGE_NSE,
+        # ✅ CORRECT Groww API USAGE (NO segment param)
+        expiries = groww.get_expiries(
+            exchange=groww.EXCHANGE_NSE,
+            trading_symbol="NIFTY"
+        )
+        monthly_expiry = expiries[0]
+
+        contracts = groww.get_contracts(
+            exchange=groww.EXCHANGE_NSE,
+            segment=groww.SEGMENT_FNO,
+            trading_symbol="NIFTY",
+            expiry=monthly_expiry
+        )
+
+        symbols = []
+        for c in contracts:
+            if abs(c["strike_price"] - atm) <= 100:
+                symbols.append(c["trading_symbol"])
+
+        if symbols:
+            resp = groww.get_ltp(
                 segment=groww.SEGMENT_FNO,
-                symbol="NIFTY"
-            )
-            monthly_expiry = expiries[0]
-
-            contracts = groww.get_contracts(
-                exchange=groww.EXCHANGE_NSE,
-                segment=groww.SEGMENT_FNO,
-                symbol="NIFTY",
-                expiry=monthly_expiry
+                exchange_trading_symbols=tuple(symbols)
             )
 
-            symbols = []
-            for c in contracts:
-                if abs(c["strike_price"] - atm) <= 100:
-                    symbols.append(c["trading_symbol"])
-
-            if symbols:
-                resp = groww.get_ltp(
-                    segment=groww.SEGMENT_FNO,
-                    exchange_trading_symbols=tuple(symbols)
-                )
-
-                for sym, raw in resp.items():
-                    ltp = extract_ltp(raw)
-                    if ltp:
-                        st.session_state.options_ltp[sym] = ltp
+            for sym, raw in resp.items():
+                ltp = extract_ltp(raw)
+                if ltp is not None:
+                    st.session_state.options_ltp[sym] = ltp
 
     except Exception as e:
         st.session_state.errors.append(str(e))
