@@ -13,6 +13,8 @@ st.title("🚀 Groww Live Paper Trading Bot")
 
 REFRESH_INTERVAL = 5
 PAPER_CAPITAL_INITIAL = 50000.0
+LOT_SIZE = 50
+COOLDOWN_SECONDS = 60
 
 # =========================================================
 # SAFE LTP EXTRACTOR
@@ -25,28 +27,37 @@ def extract_ltp(value):
     return None
 
 # =========================================================
+# INDICATORS
+# =========================================================
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# =========================================================
 # SESSION STATE
 # =========================================================
-if "tokens" not in st.session_state:
-    st.session_state.tokens = ["", "", "", "", ""]
+defaults = {
+    "tokens": ["", "", "", "", ""],
+    "bot_running": False,
+    "errors": [],
+    "index_ltp": {},
+    "options_ltp": {},
+    "paper_balance": PAPER_CAPITAL_INITIAL,
+    "trades": [],
+    "last_trade_time": {},
+}
 
-if "bot_running" not in st.session_state:
-    st.session_state.bot_running = False
-
-if "errors" not in st.session_state:
-    st.session_state.errors = []
-
-if "index_ltp" not in st.session_state:
-    st.session_state.index_ltp = {}
-
-if "options_ltp" not in st.session_state:
-    st.session_state.options_ltp = {}
-
-if "paper_balance" not in st.session_state:
-    st.session_state.paper_balance = PAPER_CAPITAL_INITIAL
-
-if "trades" not in st.session_state:
-    st.session_state.trades = []
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # =========================================================
 # SIDEBAR (LOCKED UI)
@@ -69,21 +80,20 @@ st.sidebar.caption("Auto refresh every 5 seconds")
 # AUTO REFRESH
 # =========================================================
 now = time.time()
-last = st.session_state.get("last_refresh", 0)
-if now - last >= REFRESH_INTERVAL:
+if now - st.session_state.get("last_refresh", 0) >= REFRESH_INTERVAL:
     st.session_state.last_refresh = now
     if st.session_state.bot_running:
         st.rerun()
 
 # =========================================================
-# INIT GROWW (TOKEN 1 ONLY)
+# INIT GROWW
 # =========================================================
 groww = None
 if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
 
 # =========================================================
-# TOKEN 1 — INDEX LTP + BALANCE (LOCKED)
+# INDEX LTP + BALANCE (LOCKED)
 # =========================================================
 groww_balance = None
 
@@ -93,20 +103,18 @@ if groww:
             segment=groww.SEGMENT_CASH,
             exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY")
         )
-
         for sym, raw in resp.items():
             ltp = extract_ltp(raw)
             if ltp:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
 
-        bal = groww.get_available_margin_details()
-        groww_balance = bal.get("clear_cash")
+        groww_balance = groww.get_available_margin_details().get("clear_cash")
 
     except Exception as e:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# MONTHLY FNO LTP ENGINE (LIVE)
+# OPTION LTP ENGINES (LOCKED)
 # =========================================================
 monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
@@ -119,50 +127,68 @@ if groww:
             segment=groww.SEGMENT_FNO,
             exchange_trading_symbols=tuple(monthly_symbols)
         )
-
         for sym, raw in resp.items():
             ltp = extract_ltp(raw)
             if ltp:
                 st.session_state.options_ltp[sym] = ltp
-
     except Exception as e:
         st.session_state.errors.append(str(e))
 
-# =========================================================
-# WEEKLY FNO LTP ENGINE (LIVE)
-# =========================================================
 weekly_symbol = "NIFTY2621025500CE"
 
 if groww:
     try:
         quote = groww.get_quote(
-            exchange=groww.EXCHANGE_NSE,
-            segment=groww.SEGMENT_FNO,
-            trading_symbol=weekly_symbol
+            groww.EXCHANGE_NSE,
+            groww.SEGMENT_FNO,
+            weekly_symbol
         )
-
         ltp = extract_ltp(quote)
         if ltp:
             st.session_state.options_ltp[weekly_symbol] = ltp
-
     except Exception as e:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# PAPER TRADE EXECUTION (BASIC)
+# TRADE LOGIC (NO FAKE TRADES)
 # =========================================================
-if st.session_state.options_ltp:
-    symbol, ltp = next(iter(st.session_state.options_ltp.items()))
-    cost = ltp * 50  # example lot
+if groww and st.session_state.options_ltp:
+    candles = groww.get_historical_candles(
+        groww.EXCHANGE_NSE,
+        groww.SEGMENT_CASH,
+        "NSE-NIFTY",
+        "2024-01-01 09:15:00",
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "5minute"
+    )
 
-    if st.session_state.paper_balance >= cost:
-        st.session_state.paper_balance -= cost
-        st.session_state.trades.append({
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "symbol": symbol,
-            "price": ltp,
-            "qty": 50
-        })
+    df = pd.DataFrame(candles, columns=["time", "open", "high", "low", "close", "volume"])
+    df["ema9"] = ema(df["close"], 9)
+    df["ema21"] = ema(df["close"], 21)
+    df["rsi"] = rsi(df["close"])
+
+    latest = df.iloc[-1]
+
+    trend_ok = latest["ema9"] > latest["ema21"]
+    rsi_ok = 35 < latest["rsi"] < 65
+
+    for symbol, ltp in st.session_state.options_ltp.items():
+        last_time = st.session_state.last_trade_time.get(symbol, 0)
+        if time.time() - last_time < COOLDOWN_SECONDS:
+            continue
+
+        cost = ltp * LOT_SIZE
+        if trend_ok and rsi_ok and st.session_state.paper_balance >= cost:
+            st.session_state.paper_balance -= cost
+            st.session_state.trades.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "symbol": symbol,
+                "price": ltp,
+                "qty": LOT_SIZE,
+                "sl": round(ltp * 0.85, 2)
+            })
+            st.session_state.last_trade_time[symbol] = time.time()
+            break
 
 # =========================================================
 # UI TABLES (LOCKED)
@@ -202,31 +228,6 @@ st.dataframe(
 
 st.subheader("📜 Table 3: Trade History")
 st.dataframe(pd.DataFrame(st.session_state.trades), use_container_width=True)
-
-# =========================================================
-# BACKTESTING CHART PAGE
-# =========================================================
-st.subheader("📊 Backtesting Chart (Example)")
-
-if groww:
-    candles = groww.get_historical_candles(
-        exchange=groww.EXCHANGE_NSE,
-        segment=groww.SEGMENT_CASH,
-        groww_symbol="NSE-NIFTY",
-        start_time="2024-01-01 09:15:00",
-        end_time="2024-01-10 15:30:00",
-        candle_interval="15minute"
-    )
-
-    df = pd.DataFrame(
-        candles,
-        columns=["time", "open", "high", "low", "close", "volume"]
-    )
-
-    fig, ax = plt.subplots()
-    ax.plot(df["close"])
-    ax.set_title("NIFTY Backtest Close Price")
-    st.pyplot(fig)
 
 # =========================================================
 # ERROR LOGS
