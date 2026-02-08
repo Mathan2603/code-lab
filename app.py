@@ -26,9 +26,13 @@ def extract_ltp(val):
     return None
 
 # =====================================================
-# SESSION STATE INIT (CLEAN RESET)
+# SESSION STATE — HARD RESET (CRITICAL)
 # =====================================================
 ss = st.session_state
+
+# 🔥 FORCE RESET OLD DATA (THIS FIXES YOUR ERROR)
+ss.trades = []
+ss.paper_balance = PAPER_CAPITAL_INITIAL
 
 ss.setdefault("tokens", [""] * 5)
 ss.setdefault("bot_running", False)
@@ -37,11 +41,6 @@ ss.setdefault("index_ltp", {})
 ss.setdefault("options_ltp", {})
 ss.setdefault("errors", [])
 ss.setdefault("price_memory", {})
-
-# 🔥 CLEAR OLD TRADES COMPLETELY
-if "trades" not in ss or "paper_balance" not in ss:
-    ss.trades = []
-    ss.paper_balance = PAPER_CAPITAL_INITIAL
 
 # =====================================================
 # SIDEBAR (LOCKED UI)
@@ -61,7 +60,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =====================================================
-# TOP-RIGHT TIME (IST)
+# TOP RIGHT TIME (IST)
 # =====================================================
 _, col_time = st.columns([9, 1])
 with col_time:
@@ -72,7 +71,7 @@ with col_time:
     )
 
 # =====================================================
-# AUTO REFRESH (STABLE)
+# AUTO REFRESH
 # =====================================================
 now = time.time()
 if ss.bot_running and (now - ss.last_refresh) >= REFRESH_INTERVAL:
@@ -90,7 +89,6 @@ if ss.bot_running and ss.tokens[0]:
 # TOKEN 1 — INDEX LTP + BALANCE (LOCKED)
 # =====================================================
 groww_balance = None
-
 if groww:
     try:
         resp = groww.get_ltp(
@@ -141,7 +139,7 @@ if groww:
         ss.errors.append(str(e))
 
 # =====================================================
-# INDICATORS
+# INDICATOR
 # =====================================================
 def should_enter_trade(symbol, ltp):
     prev = ss.price_memory.get(symbol)
@@ -150,21 +148,11 @@ def should_enter_trade(symbol, ltp):
         return False
     return abs((ltp - prev) / prev) * 100 >= 0.3
 
-def update_trade(trade, ltp):
-    if trade["status"] == "OPEN" and ltp <= trade["stop_loss"]:
-        trade["status"] = "CLOSED"
-        trade["sell_price"] = ltp
-
 # =====================================================
-# PAPER TRADE EXECUTION
+# PAPER TRADE EXECUTION (CLEAN)
 # =====================================================
 for sym, ltp in ss.options_ltp.items():
-    open_trades = [
-        t for t in ss.trades
-        if t["symbol"] == sym and t["status"] == "OPEN"
-    ]
-
-    if not open_trades and should_enter_trade(sym, ltp):
+    if should_enter_trade(sym, ltp):
         lot_size = 50
         buy_value = lot_size * ltp
         if ss.paper_balance >= buy_value:
@@ -178,10 +166,7 @@ for sym, ltp in ss.options_ltp.items():
                 "status": "OPEN",
                 "sell_price": None
             })
-
-for t in ss.trades:
-    if t["status"] == "OPEN" and t["symbol"] in ss.options_ltp:
-        update_trade(t, ss.options_ltp[t["symbol"]])
+        break  # one trade per cycle
 
 # =====================================================
 # TABLE 1
@@ -223,7 +208,7 @@ st.dataframe(
 )
 
 # =====================================================
-# TABLE 3 (FINAL, CLEAN)
+# TABLE 3 (100% SAFE)
 # =====================================================
 st.subheader("📜 Table 3: Trade History")
 
@@ -231,22 +216,19 @@ rows = []
 for i, t in enumerate(ss.trades, 1):
     rows.append({
         "S.No": i,
-        "Symbol": t["symbol"],
-        "Buy Price": t["buy_price"],
-        "Lot Size": t["lot_size"],
-        "Buy Value": t["buy_value"],
-        "Stop Loss": t["stop_loss"],
-        "Live / Sold Price":
-            ss.options_ltp.get(t["symbol"])
-            if t["status"] == "OPEN"
-            else t["sell_price"],
-        "Order Status": t["status"]
+        "Symbol": t.get("symbol"),
+        "Buy Price": t.get("buy_price"),
+        "Lot Size": t.get("lot_size"),
+        "Buy Value": t.get("buy_value"),
+        "Stop Loss": t.get("stop_loss"),
+        "Live / Sold Price": ss.options_ltp.get(t.get("symbol")),
+        "Order Status": t.get("status")
     })
 
 st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 # =====================================================
-# ERROR LOGS
+# ERRORS
 # =====================================================
 st.subheader("🛑 Error Logs")
 if ss.errors:
