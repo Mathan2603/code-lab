@@ -29,7 +29,6 @@ def extract_ltp(val):
 # SESSION STATE INIT
 # =====================================================
 ss = st.session_state
-
 ss.setdefault("tokens", [""] * 5)
 ss.setdefault("bot_running", False)
 ss.setdefault("last_refresh", 0.0)
@@ -58,7 +57,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =====================================================
-# TOP RIGHT TIME (IST)
+# TOP-RIGHT TIME (IST)
 # =====================================================
 _, col_time = st.columns([9, 1])
 with col_time:
@@ -69,7 +68,7 @@ with col_time:
     )
 
 # =====================================================
-# AUTO REFRESH (FIXED)
+# AUTO REFRESH (STABLE)
 # =====================================================
 now = time.time()
 if ss.bot_running and (now - ss.last_refresh) >= REFRESH_INTERVAL:
@@ -77,17 +76,16 @@ if ss.bot_running and (now - ss.last_refresh) >= REFRESH_INTERVAL:
     st.rerun()
 
 # =====================================================
-# INIT GROWW (TOKEN 1 ONLY)
+# INIT GROWW (TOKEN-1 ONLY)
 # =====================================================
 groww = None
 if ss.bot_running and ss.tokens[0]:
     groww = GrowwAPI(ss.tokens[0])
 
 # =====================================================
-# TOKEN 1 — INDEX LTP + BALANCE (LOCKED)
+# TOKEN-1: INDEX LTP + BALANCE (LOCKED)
 # =====================================================
 groww_balance = None
-
 if groww:
     try:
         resp = groww.get_ltp(
@@ -138,6 +136,14 @@ if groww:
         ss.errors.append(str(e))
 
 # =====================================================
+# NORMALIZE TRADES (CRITICAL FIX)
+# =====================================================
+for t in ss.trades:
+    t.setdefault("status", "OPEN")
+    t.setdefault("sell_price", None)
+    t.setdefault("stop_loss", t.get("buy_price", 0) * 0.7)
+
+# =====================================================
 # INDICATORS
 # =====================================================
 def should_enter_trade(symbol, ltp):
@@ -148,16 +154,9 @@ def should_enter_trade(symbol, ltp):
     return abs((ltp - prev) / prev) * 100 >= 0.3
 
 def update_trade(trade, ltp):
-    if trade["status"] == "OPEN" and ltp <= trade["stop_loss"]:
+    if trade.get("status") == "OPEN" and ltp <= trade.get("stop_loss", 0):
         trade["status"] = "CLOSED"
         trade["sell_price"] = ltp
-
-# =====================================================
-# NORMALIZE OLD TRADES (CRITICAL FIX)
-# =====================================================
-for t in ss.trades:
-    t.setdefault("status", "OPEN")
-    t.setdefault("sell_price", None)
 
 # =====================================================
 # PAPER TRADE EXECUTION
@@ -184,11 +183,11 @@ for sym, ltp in ss.options_ltp.items():
             })
 
 for t in ss.trades:
-    if t.get("status") == "OPEN" and t["symbol"] in ss.options_ltp:
+    if t.get("status") == "OPEN" and t.get("symbol") in ss.options_ltp:
         update_trade(t, ss.options_ltp[t["symbol"]])
 
 # =====================================================
-# TABLE 1
+# TABLE-1
 # =====================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 c1, c2 = st.columns([2, 1])
@@ -216,7 +215,7 @@ with c2:
     )
 
 # =====================================================
-# TABLE 2
+# TABLE-2
 # =====================================================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.dataframe(
@@ -227,7 +226,7 @@ st.dataframe(
 )
 
 # =====================================================
-# TABLE 3 (FIXED STRUCTURE)
+# TABLE-3 (FINAL, STABLE)
 # =====================================================
 st.subheader("📜 Table 3: Trade History")
 
