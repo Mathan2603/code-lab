@@ -13,7 +13,11 @@ st.title("🚀 Groww Live Paper Trading Bot")
 REFRESH_INTERVAL = 5
 PAPER_CAPITAL_INITIAL = 50000.0
 LOT_SIZE = 50
-COOLDOWN_SECONDS = 60
+
+# Risk params (STEP 2)
+INITIAL_SL_PCT = 0.15     # 15% SL
+TRAIL_SL_PCT = 0.10       # trail 10%
+TARGET_PCT = 0.30         # 30% target
 
 # =========================================================
 # SAFE LTP EXTRACTOR
@@ -60,10 +64,9 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # =========================================================
-# SAFE ERROR LOGGER (FIX)
+# SAFE ERROR LOGGER (LOCKED)
 # =========================================================
 def log_error(msg):
-    # 🔕 Ignore Groww noise error
     if "Not able to recognize exchange" in msg:
         return
     st.session_state.errors.append(msg)
@@ -147,7 +150,6 @@ if groww:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
 
         groww_balance = groww.get_available_margin_details().get("clear_cash")
-
     except Exception as e:
         log_error(str(e))
 
@@ -188,19 +190,71 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# POSITION MANAGEMENT (UNCHANGED)
+# ENTRY LOGIC (UNCHANGED)
+# =========================================================
+df = st.session_state.indicator_df
+if df is not None and not df.empty:
+    latest = df.iloc[-1]
+    trend_ok = latest["ema9"] > latest["ema21"]
+    rsi_ok = 35 < latest["rsi"] < 65
+
+    if trend_ok and rsi_ok:
+        for symbol, ltp in st.session_state.options_ltp.items():
+            already_open = any(
+                p["symbol"] == symbol and p["status"] == "OPEN"
+                for p in st.session_state.positions
+            )
+            if already_open:
+                continue
+
+            cost = ltp * LOT_SIZE
+            if st.session_state.paper_balance >= cost:
+                st.session_state.paper_balance -= cost
+                st.session_state.positions.append({
+                    "symbol": symbol,
+                    "entry_price": ltp,
+                    "qty": LOT_SIZE,
+                    "sl": round(ltp * (1 - INITIAL_SL_PCT), 2),
+                    "target": round(ltp * (1 + TARGET_PCT), 2),
+                    "entry_time": datetime.now().strftime("%H:%M:%S"),
+                    "status": "OPEN"
+                })
+                break
+
+# =========================================================
+# POSITION MANAGEMENT (STEP 2)
 # =========================================================
 for pos in list(st.session_state.positions):
-    ltp = st.session_state.options_ltp.get(pos["symbol"])
-    if ltp is not None and ltp <= pos["sl"]:
+    symbol = pos["symbol"]
+    ltp = st.session_state.options_ltp.get(symbol)
+
+    if ltp is None:
+        continue
+
+    # 🔁 TRAILING SL (only upward)
+    trail_sl = round(ltp * (1 - TRAIL_SL_PCT), 2)
+    if trail_sl > pos["sl"]:
+        pos["sl"] = trail_sl
+
+    exit_reason = None
+
+    if ltp <= pos["sl"]:
+        exit_reason = "SL"
+    elif ltp >= pos["target"]:
+        exit_reason = "TARGET"
+
+    if exit_reason:
         pnl = (ltp - pos["entry_price"]) * pos["qty"]
         st.session_state.paper_balance += ltp * pos["qty"]
+
         pos.update({
             "exit_price": ltp,
             "exit_time": datetime.now().strftime("%H:%M:%S"),
             "pnl": round(pnl, 2),
+            "exit_reason": exit_reason,
             "status": "CLOSED"
         })
+
         st.session_state.closed_trades.append(pos)
         st.session_state.positions.remove(pos)
 
@@ -244,7 +298,7 @@ st.subheader("📜 Table 3: Trade History")
 st.dataframe(pd.DataFrame(st.session_state.closed_trades), use_container_width=True)
 
 # =========================================================
-# ERROR LOGS (FIXED)
+# ERROR LOGS
 # =========================================================
 st.subheader("🛑 Error Logs")
 if st.session_state.errors:
