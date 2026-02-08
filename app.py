@@ -93,12 +93,12 @@ if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
 
 # =========================================================
-# FETCH INDICATORS (ONCE, SAFE RANGE)
+# FETCH INDICATORS (ONCE, SAFE + GUARDED)
 # =========================================================
 if groww and st.session_state.indicator_df is None:
     try:
         end_time = datetime.now()
-        start_time = end_time - timedelta(days=60)  # ✅ under 90 days
+        start_time = end_time - timedelta(days=60)
 
         candles = groww.get_historical_candles(
             groww.EXCHANGE_NSE,
@@ -109,15 +109,20 @@ if groww and st.session_state.indicator_df is None:
             "15minute"
         )
 
-        df = pd.DataFrame(
-            candles,
-            columns=["time", "open", "high", "low", "close", "volume"]
-        )
-        df["ema9"] = ema(df["close"], 9)
-        df["ema21"] = ema(df["close"], 21)
-        df["rsi"] = rsi(df["close"])
+        # 🔐 HARD SAFETY CHECK
+        if candles and len(candles) >= 30:
+            df = pd.DataFrame(
+                candles,
+                columns=["time", "open", "high", "low", "close", "volume"]
+            )
+            df["ema9"] = ema(df["close"], 9)
+            df["ema21"] = ema(df["close"], 21)
+            df["rsi"] = rsi(df["close"])
 
-        st.session_state.indicator_df = df
+            if not df.empty:
+                st.session_state.indicator_df = df
+        else:
+            st.session_state.errors.append("Indicator data not ready yet")
 
     except Exception as e:
         st.session_state.errors.append(str(e))
@@ -178,9 +183,9 @@ if groww:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# SAFE TRADE LOGIC (NO FAKE TRADES)
+# SAFE TRADE LOGIC (NO CRASH, NO FAKE TRADES)
 # =========================================================
-if st.session_state.indicator_df is not None:
+if st.session_state.indicator_df is not None and not st.session_state.indicator_df.empty:
     latest = st.session_state.indicator_df.iloc[-1]
 
     trend_ok = latest["ema9"] > latest["ema21"]
