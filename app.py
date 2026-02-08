@@ -1,6 +1,6 @@
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import pandas as pd
-import time
 from datetime import datetime
 import pytz
 from growwapi import GrowwAPI
@@ -11,9 +11,14 @@ from growwapi import GrowwAPI
 st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
 st.title("🚀 Groww Live Paper Trading Bot")
 
-REFRESH_INTERVAL = 5
-PAPER_CAPITAL = 50000.0
 IST = pytz.timezone("Asia/Kolkata")
+REFRESH_MS = 5000
+PAPER_CAPITAL = 50000.0
+
+# =====================================================
+# AUTO REFRESH (FIXED & STABLE)
+# =====================================================
+st_autorefresh(interval=REFRESH_MS, key="auto_refresh")
 
 # =====================================================
 # SESSION STATE (SAFE INIT)
@@ -22,12 +27,10 @@ ss = st.session_state
 ss.setdefault("tokens", [""] * 5)
 ss.setdefault("bot_running", False)
 ss.setdefault("paper_balance", PAPER_CAPITAL)
-ss.setdefault("trades", [])
 ss.setdefault("index_ltp", {})
 ss.setdefault("options_ltp", {})
+ss.setdefault("trades", [])
 ss.setdefault("errors", [])
-ss.setdefault("last_refresh", 0.0)
-ss.setdefault("price_memory", {})
 
 # =====================================================
 # SIDEBAR (LOCKED UI)
@@ -58,15 +61,7 @@ with time_col:
     )
 
 # =====================================================
-# AUTO REFRESH
-# =====================================================
-now = time.time()
-if ss.bot_running and (now - ss.last_refresh) >= REFRESH_INTERVAL:
-    ss.last_refresh = now
-    st.rerun()
-
-# =====================================================
-# INIT GROWW (TOKEN 1 ONLY)
+# INIT GROWW (TOKEN 1 LOCKED)
 # =====================================================
 groww = None
 if ss.bot_running and ss.tokens[0]:
@@ -81,44 +76,44 @@ if groww:
             segment=groww.SEGMENT_CASH,
             exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY")
         )
-        for k, v in resp.items():
-            ss.index_ltp[k.replace("NSE_", "")] = v["ltp"]
+        for sym, data in resp.items():
+            ss.index_ltp[sym.replace("NSE_", "")] = float(data["ltp"])
     except Exception as e:
         ss.errors.append(str(e))
 
 # =====================================================
-# MONTHLY + WEEKLY FNO LTP (FIXED)
+# MONTHLY + WEEKLY FNO LTP (CORRECT & SAFE)
 # =====================================================
 monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
-    "NSE_NIFTY26FEB25500PE"
+    "NSE_NIFTY26FEB25500PE",
 ]
 
 weekly_symbol = "NIFTY2621025500CE"
 
 if groww:
     try:
-        # Monthly → get_ltp (batch)
-        m = groww.get_ltp(
+        # Monthly (batch allowed)
+        monthly = groww.get_ltp(
             segment=groww.SEGMENT_FNO,
             exchange_trading_symbols=tuple(monthly_symbols)
         )
-        for k, v in m.items():
-            ss.options_ltp[k] = v["ltp"]
+        for sym, data in monthly.items():
+            ss.options_ltp[sym] = float(data["ltp"])
 
-        # ✅ Weekly → get_quote (FIXED EXCHANGE)
-        q = groww.get_quote(
-            groww.EXCHANGE_NSE,     # ✅ FIX
+        # Weekly (ONE BY ONE ONLY)
+        weekly = groww.get_quote(
+            groww.EXCHANGE_NSE,
             groww.SEGMENT_FNO,
             weekly_symbol
         )
-        ss.options_ltp[weekly_symbol] = q["ltp"]
+        ss.options_ltp[weekly_symbol] = float(weekly["ltp"])
 
     except Exception as e:
         ss.errors.append(str(e))
 
 # =====================================================
-# TABLE 1
+# TABLE 1 — INDEX & ACCOUNT
 # =====================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 
@@ -141,7 +136,7 @@ with c2:
     )
 
 # =====================================================
-# TABLE 2
+# TABLE 2 — OPTIONS LTP
 # =====================================================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.dataframe(
@@ -152,10 +147,24 @@ st.dataframe(
 )
 
 # =====================================================
-# TABLE 3 (EMPTY FOR NOW – SAFE)
+# TABLE 3 — TRADE HISTORY (RESET SAFE)
 # =====================================================
 st.subheader("📜 Table 3: Trade History")
-st.dataframe(pd.DataFrame([]), use_container_width=True)
+
+trade_rows = []
+for i, t in enumerate(ss.trades, start=1):
+    trade_rows.append({
+        "S.No": i,
+        "Symbol": t["symbol"],
+        "Buy Price": t["buy_price"],
+        "Lot Size": t["lot"],
+        "Buy Value": t["buy_price"] * t["lot"],
+        "Stop Loss": t["stop_loss"],
+        "Live / Sold Price": t.get("exit_price", t["buy_price"]),
+        "Status": t["status"]
+    })
+
+st.dataframe(pd.DataFrame(trade_rows), use_container_width=True)
 
 # =====================================================
 # ERROR LOGS
