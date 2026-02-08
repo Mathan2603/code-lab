@@ -26,18 +26,22 @@ def extract_ltp(val):
     return None
 
 # =====================================================
-# SESSION STATE INIT
+# SESSION STATE INIT (CLEAN RESET)
 # =====================================================
 ss = st.session_state
+
 ss.setdefault("tokens", [""] * 5)
 ss.setdefault("bot_running", False)
 ss.setdefault("last_refresh", 0.0)
 ss.setdefault("index_ltp", {})
 ss.setdefault("options_ltp", {})
-ss.setdefault("paper_balance", PAPER_CAPITAL_INITIAL)
-ss.setdefault("trades", [])
 ss.setdefault("errors", [])
 ss.setdefault("price_memory", {})
+
+# 🔥 CLEAR OLD TRADES COMPLETELY
+if "trades" not in ss or "paper_balance" not in ss:
+    ss.trades = []
+    ss.paper_balance = PAPER_CAPITAL_INITIAL
 
 # =====================================================
 # SIDEBAR (LOCKED UI)
@@ -76,16 +80,17 @@ if ss.bot_running and (now - ss.last_refresh) >= REFRESH_INTERVAL:
     st.rerun()
 
 # =====================================================
-# INIT GROWW (TOKEN-1 ONLY)
+# INIT GROWW (TOKEN 1 ONLY)
 # =====================================================
 groww = None
 if ss.bot_running and ss.tokens[0]:
     groww = GrowwAPI(ss.tokens[0])
 
 # =====================================================
-# TOKEN-1: INDEX LTP + BALANCE (LOCKED)
+# TOKEN 1 — INDEX LTP + BALANCE (LOCKED)
 # =====================================================
 groww_balance = None
+
 if groww:
     try:
         resp = groww.get_ltp(
@@ -136,14 +141,6 @@ if groww:
         ss.errors.append(str(e))
 
 # =====================================================
-# NORMALIZE TRADES (CRITICAL FIX)
-# =====================================================
-for t in ss.trades:
-    t.setdefault("status", "OPEN")
-    t.setdefault("sell_price", None)
-    t.setdefault("stop_loss", t.get("buy_price", 0) * 0.7)
-
-# =====================================================
 # INDICATORS
 # =====================================================
 def should_enter_trade(symbol, ltp):
@@ -154,7 +151,7 @@ def should_enter_trade(symbol, ltp):
     return abs((ltp - prev) / prev) * 100 >= 0.3
 
 def update_trade(trade, ltp):
-    if trade.get("status") == "OPEN" and ltp <= trade.get("stop_loss", 0):
+    if trade["status"] == "OPEN" and ltp <= trade["stop_loss"]:
         trade["status"] = "CLOSED"
         trade["sell_price"] = ltp
 
@@ -164,18 +161,18 @@ def update_trade(trade, ltp):
 for sym, ltp in ss.options_ltp.items():
     open_trades = [
         t for t in ss.trades
-        if t.get("symbol") == sym and t.get("status") == "OPEN"
+        if t["symbol"] == sym and t["status"] == "OPEN"
     ]
 
     if not open_trades and should_enter_trade(sym, ltp):
-        lot = 50
-        buy_value = lot * ltp
+        lot_size = 50
+        buy_value = lot_size * ltp
         if ss.paper_balance >= buy_value:
             ss.paper_balance -= buy_value
             ss.trades.append({
                 "symbol": sym,
                 "buy_price": ltp,
-                "lot": lot,
+                "lot_size": lot_size,
                 "buy_value": buy_value,
                 "stop_loss": ltp * 0.70,
                 "status": "OPEN",
@@ -183,11 +180,11 @@ for sym, ltp in ss.options_ltp.items():
             })
 
 for t in ss.trades:
-    if t.get("status") == "OPEN" and t.get("symbol") in ss.options_ltp:
+    if t["status"] == "OPEN" and t["symbol"] in ss.options_ltp:
         update_trade(t, ss.options_ltp[t["symbol"]])
 
 # =====================================================
-# TABLE-1
+# TABLE 1
 # =====================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 c1, c2 = st.columns([2, 1])
@@ -215,7 +212,7 @@ with c2:
     )
 
 # =====================================================
-# TABLE-2
+# TABLE 2
 # =====================================================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.dataframe(
@@ -226,7 +223,7 @@ st.dataframe(
 )
 
 # =====================================================
-# TABLE-3 (FINAL, STABLE)
+# TABLE 3 (FINAL, CLEAN)
 # =====================================================
 st.subheader("📜 Table 3: Trade History")
 
@@ -236,7 +233,7 @@ for i, t in enumerate(ss.trades, 1):
         "S.No": i,
         "Symbol": t["symbol"],
         "Buy Price": t["buy_price"],
-        "Lot Size": t["lot"],
+        "Lot Size": t["lot_size"],
         "Buy Value": t["buy_value"],
         "Stop Loss": t["stop_loss"],
         "Live / Sold Price":
@@ -249,7 +246,7 @@ for i, t in enumerate(ss.trades, 1):
 st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 # =====================================================
-# ERRORS
+# ERROR LOGS
 # =====================================================
 st.subheader("🛑 Error Logs")
 if ss.errors:
