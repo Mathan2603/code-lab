@@ -15,11 +15,6 @@ PAPER_CAPITAL_INITIAL = 50000.0
 LOT_SIZE = 50
 COOLDOWN_SECONDS = 60
 
-IGNORED_ERRORS = (
-    "Not able to recognize exchange",
-    "Indicator data not ready yet"
-)
-
 # =========================================================
 # SAFE LTP EXTRACTOR
 # =========================================================
@@ -52,28 +47,17 @@ defaults = {
     "tokens": ["", "", "", "", ""],
     "bot_running": False,
     "errors": [],
-    "logged_errors": set(),
     "index_ltp": {},
     "options_ltp": {},
     "paper_balance": PAPER_CAPITAL_INITIAL,
-    "trades": [],
-    "last_trade_time": {},
+    "positions": [],       # OPEN positions
+    "closed_trades": [],   # CLOSED positions
     "indicator_df": None,
 }
 
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
-
-# =========================================================
-# SAFE ERROR LOGGER
-# =========================================================
-def log_error(msg):
-    if any(x in msg for x in IGNORED_ERRORS):
-        return
-    if msg not in st.session_state.logged_errors:
-        st.session_state.logged_errors.add(msg)
-        st.session_state.errors.append(msg)
 
 # =========================================================
 # SIDEBAR (LOCKED UI)
@@ -109,7 +93,7 @@ if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
 
 # =========================================================
-# FETCH INDICATORS (ONCE, GUARDED)
+# FETCH INDICATORS (ONCE)
 # =========================================================
 if groww and st.session_state.indicator_df is None:
     try:
@@ -134,11 +118,9 @@ if groww and st.session_state.indicator_df is None:
             df["ema21"] = ema(df["close"], 21)
             df["rsi"] = rsi(df["close"])
             st.session_state.indicator_df = df
-        else:
-            log_error("Indicator data not ready yet")
 
     except Exception as e:
-        log_error(str(e))
+        st.session_state.errors.append(str(e))
 
 # =========================================================
 # INDEX LTP + BALANCE (LOCKED)
@@ -156,9 +138,8 @@ if groww:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
 
         groww_balance = groww.get_available_margin_details().get("clear_cash")
-
     except Exception as e:
-        log_error(str(e))
+        st.session_state.errors.append(str(e))
 
 # =========================================================
 # OPTION LTP FETCHERS (LOCKED)
@@ -179,7 +160,7 @@ if groww:
             if ltp:
                 st.session_state.options_ltp[sym] = ltp
     except Exception as e:
-        log_error(str(e))
+        st.session_state.errors.append(str(e))
 
 weekly_symbol = "NIFTY2621025500CE"
 
@@ -194,10 +175,10 @@ if groww:
         if ltp:
             st.session_state.options_ltp[weekly_symbol] = ltp
     except Exception as e:
-        log_error(str(e))
+        st.session_state.errors.append(str(e))
 
 # =========================================================
-# SAFE TRADE LOGIC
+# ENTRY LOGIC (OPEN POSITION)
 # =========================================================
 df = st.session_state.indicator_df
 if df is not None and not df.empty:
@@ -205,22 +186,50 @@ if df is not None and not df.empty:
     trend_ok = latest["ema9"] > latest["ema21"]
     rsi_ok = 35 < latest["rsi"] < 65
 
-    for symbol, ltp in st.session_state.options_ltp.items():
-        if time.time() - st.session_state.last_trade_time.get(symbol, 0) < COOLDOWN_SECONDS:
-            continue
+    if trend_ok and rsi_ok:
+        for symbol, ltp in st.session_state.options_ltp.items():
+            already_open = any(p["symbol"] == symbol and p["status"] == "OPEN"
+                               for p in st.session_state.positions)
+            if already_open:
+                continue
 
-        cost = ltp * LOT_SIZE
-        if trend_ok and rsi_ok and st.session_state.paper_balance >= cost:
-            st.session_state.paper_balance -= cost
-            st.session_state.trades.append({
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "symbol": symbol,
-                "price": ltp,
-                "qty": LOT_SIZE,
-                "sl": round(ltp * 0.85, 2)
-            })
-            st.session_state.last_trade_time[symbol] = time.time()
-            break
+            cost = ltp * LOT_SIZE
+            if st.session_state.paper_balance >= cost:
+                st.session_state.paper_balance -= cost
+                st.session_state.positions.append({
+                    "symbol": symbol,
+                    "entry_price": ltp,
+                    "qty": LOT_SIZE,
+                    "sl": round(ltp * 0.85, 2),
+                    "entry_time": datetime.now().strftime("%H:%M:%S"),
+                    "status": "OPEN"
+                })
+                break
+
+# =========================================================
+# POSITION MANAGEMENT (EXIT ON SL)
+# =========================================================
+for pos in list(st.session_state.positions):
+    symbol = pos["symbol"]
+    ltp = st.session_state.options_ltp.get(symbol)
+
+    if ltp is None:
+        continue
+
+    # SL HIT
+    if ltp <= pos["sl"]:
+        pnl = (ltp - pos["entry_price"]) * pos["qty"]
+        st.session_state.paper_balance += ltp * pos["qty"]
+
+        pos.update({
+            "exit_price": ltp,
+            "exit_time": datetime.now().strftime("%H:%M:%S"),
+            "pnl": round(pnl, 2),
+            "status": "CLOSED"
+        })
+
+        st.session_state.closed_trades.append(pos)
+        st.session_state.positions.remove(pos)
 
 # =========================================================
 # UI TABLES (LOCKED)
@@ -240,7 +249,7 @@ with colB:
     st.markdown(
         f"""
         **Paper Trade Capital:**  
-        <span style="color:green;font-weight:bold;">₹ {st.session_state.paper_balance}</span>
+        <span style="color:green;font-weight:bold;">₹ {round(st.session_state.paper_balance,2)}</span>
 
         **Groww Available Balance (LIVE):**  
         <span style="color:{'green' if (groww_balance or 0) >= 0 else 'red'};font-weight:bold;">
@@ -259,7 +268,8 @@ st.dataframe(
 )
 
 st.subheader("📜 Table 3: Trade History")
-st.dataframe(pd.DataFrame(st.session_state.trades), use_container_width=True)
+history_df = pd.DataFrame(st.session_state.closed_trades)
+st.dataframe(history_df, use_container_width=True)
 
 # =========================================================
 # ERROR LOGS
