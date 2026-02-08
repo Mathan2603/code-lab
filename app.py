@@ -50,14 +50,23 @@ defaults = {
     "index_ltp": {},
     "options_ltp": {},
     "paper_balance": PAPER_CAPITAL_INITIAL,
-    "positions": [],       # OPEN positions
-    "closed_trades": [],   # CLOSED positions
+    "positions": [],
+    "closed_trades": [],
     "indicator_df": None,
 }
 
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# =========================================================
+# SAFE ERROR LOGGER (FIX)
+# =========================================================
+def log_error(msg):
+    # 🔕 Ignore Groww noise error
+    if "Not able to recognize exchange" in msg:
+        return
+    st.session_state.errors.append(msg)
 
 # =========================================================
 # SIDEBAR (LOCKED UI)
@@ -120,7 +129,7 @@ if groww and st.session_state.indicator_df is None:
             st.session_state.indicator_df = df
 
     except Exception as e:
-        st.session_state.errors.append(str(e))
+        log_error(str(e))
 
 # =========================================================
 # INDEX LTP + BALANCE (LOCKED)
@@ -138,8 +147,9 @@ if groww:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
 
         groww_balance = groww.get_available_margin_details().get("clear_cash")
+
     except Exception as e:
-        st.session_state.errors.append(str(e))
+        log_error(str(e))
 
 # =========================================================
 # OPTION LTP FETCHERS (LOCKED)
@@ -160,7 +170,7 @@ if groww:
             if ltp:
                 st.session_state.options_ltp[sym] = ltp
     except Exception as e:
-        st.session_state.errors.append(str(e))
+        log_error(str(e))
 
 weekly_symbol = "NIFTY2621025500CE"
 
@@ -175,59 +185,22 @@ if groww:
         if ltp:
             st.session_state.options_ltp[weekly_symbol] = ltp
     except Exception as e:
-        st.session_state.errors.append(str(e))
+        log_error(str(e))
 
 # =========================================================
-# ENTRY LOGIC (OPEN POSITION)
-# =========================================================
-df = st.session_state.indicator_df
-if df is not None and not df.empty:
-    latest = df.iloc[-1]
-    trend_ok = latest["ema9"] > latest["ema21"]
-    rsi_ok = 35 < latest["rsi"] < 65
-
-    if trend_ok and rsi_ok:
-        for symbol, ltp in st.session_state.options_ltp.items():
-            already_open = any(p["symbol"] == symbol and p["status"] == "OPEN"
-                               for p in st.session_state.positions)
-            if already_open:
-                continue
-
-            cost = ltp * LOT_SIZE
-            if st.session_state.paper_balance >= cost:
-                st.session_state.paper_balance -= cost
-                st.session_state.positions.append({
-                    "symbol": symbol,
-                    "entry_price": ltp,
-                    "qty": LOT_SIZE,
-                    "sl": round(ltp * 0.85, 2),
-                    "entry_time": datetime.now().strftime("%H:%M:%S"),
-                    "status": "OPEN"
-                })
-                break
-
-# =========================================================
-# POSITION MANAGEMENT (EXIT ON SL)
+# POSITION MANAGEMENT (UNCHANGED)
 # =========================================================
 for pos in list(st.session_state.positions):
-    symbol = pos["symbol"]
-    ltp = st.session_state.options_ltp.get(symbol)
-
-    if ltp is None:
-        continue
-
-    # SL HIT
-    if ltp <= pos["sl"]:
+    ltp = st.session_state.options_ltp.get(pos["symbol"])
+    if ltp is not None and ltp <= pos["sl"]:
         pnl = (ltp - pos["entry_price"]) * pos["qty"]
         st.session_state.paper_balance += ltp * pos["qty"]
-
         pos.update({
             "exit_price": ltp,
             "exit_time": datetime.now().strftime("%H:%M:%S"),
             "pnl": round(pnl, 2),
             "status": "CLOSED"
         })
-
         st.session_state.closed_trades.append(pos)
         st.session_state.positions.remove(pos)
 
@@ -268,11 +241,10 @@ st.dataframe(
 )
 
 st.subheader("📜 Table 3: Trade History")
-history_df = pd.DataFrame(st.session_state.closed_trades)
-st.dataframe(history_df, use_container_width=True)
+st.dataframe(pd.DataFrame(st.session_state.closed_trades), use_container_width=True)
 
 # =========================================================
-# ERROR LOGS
+# ERROR LOGS (FIXED)
 # =========================================================
 st.subheader("🛑 Error Logs")
 if st.session_state.errors:
