@@ -15,21 +15,23 @@ IST = pytz.timezone("Asia/Kolkata")
 REFRESH_MS = 5000
 PAPER_CAPITAL = 50000.0
 
-# =====================================================
-# AUTO REFRESH (FIXED & STABLE)
-# =====================================================
 st_autorefresh(interval=REFRESH_MS, key="auto_refresh")
 
 # =====================================================
-# SESSION STATE (SAFE INIT)
+# SESSION STATE — HARD RESET (CRITICAL FIX)
 # =====================================================
 ss = st.session_state
+
 ss.setdefault("tokens", [""] * 5)
 ss.setdefault("bot_running", False)
-ss.setdefault("paper_balance", PAPER_CAPITAL)
+
+# 🚨 FORCE CLEAN RESET (kills old broken trades)
+if "trades" not in ss or st.sidebar.button("🔁 Reset Paper Trades"):
+    ss.trades = []
+    ss.paper_balance = PAPER_CAPITAL
+
 ss.setdefault("index_ltp", {})
 ss.setdefault("options_ltp", {})
-ss.setdefault("trades", [])
 ss.setdefault("errors", [])
 
 # =====================================================
@@ -50,7 +52,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =====================================================
-# TOP RIGHT TIME (IST)
+# TIME (IST)
 # =====================================================
 _, time_col = st.columns([9, 1])
 with time_col:
@@ -61,7 +63,7 @@ with time_col:
     )
 
 # =====================================================
-# INIT GROWW (TOKEN 1 LOCKED)
+# GROWW INIT (TOKEN 1 ONLY)
 # =====================================================
 groww = None
 if ss.bot_running and ss.tokens[0]:
@@ -82,18 +84,16 @@ if groww:
         ss.errors.append(str(e))
 
 # =====================================================
-# MONTHLY + WEEKLY FNO LTP (CORRECT & SAFE)
+# OPTIONS LTP (MONTHLY + WEEKLY)
 # =====================================================
 monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
     "NSE_NIFTY26FEB25500PE",
 ]
-
 weekly_symbol = "NIFTY2621025500CE"
 
 if groww:
     try:
-        # Monthly (batch allowed)
         monthly = groww.get_ltp(
             segment=groww.SEGMENT_FNO,
             exchange_trading_symbols=tuple(monthly_symbols)
@@ -101,7 +101,6 @@ if groww:
         for sym, data in monthly.items():
             ss.options_ltp[sym] = float(data["ltp"])
 
-        # Weekly (ONE BY ONE ONLY)
         weekly = groww.get_quote(
             groww.EXCHANGE_NSE,
             groww.SEGMENT_FNO,
@@ -113,7 +112,7 @@ if groww:
         ss.errors.append(str(e))
 
 # =====================================================
-# TABLE 1 — INDEX & ACCOUNT
+# TABLE 1 — INDEX
 # =====================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 
@@ -128,10 +127,8 @@ with c1:
 
 with c2:
     st.markdown(
-        f"""
-        **Paper Trade Capital:**  
-        <span style="color:green;font-weight:bold;">₹ {ss.paper_balance:.2f}</span>
-        """,
+        f"<b>Paper Trade Capital:</b><br>"
+        f"<span style='color:green;font-size:18px;'>₹ {ss.paper_balance:.2f}</span>",
         unsafe_allow_html=True
     )
 
@@ -147,13 +144,13 @@ st.dataframe(
 )
 
 # =====================================================
-# TABLE 3 — TRADE HISTORY (RESET SAFE)
+# TABLE 3 — TRADE HISTORY (SAFE RENDER)
 # =====================================================
 st.subheader("📜 Table 3: Trade History")
 
-trade_rows = []
+rows = []
 for i, t in enumerate(ss.trades, start=1):
-    trade_rows.append({
+    rows.append({
         "S.No": i,
         "Symbol": t["symbol"],
         "Buy Price": t["buy_price"],
@@ -164,10 +161,10 @@ for i, t in enumerate(ss.trades, start=1):
         "Status": t["status"]
     })
 
-st.dataframe(pd.DataFrame(trade_rows), use_container_width=True)
+st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 # =====================================================
-# ERROR LOGS
+# ERRORS
 # =====================================================
 st.subheader("🛑 Error Logs")
 if ss.errors:
