@@ -53,6 +53,7 @@ defaults = {
     "paper_balance": PAPER_CAPITAL_INITIAL,
     "trades": [],
     "last_trade_time": {},
+    "indicator_df": None,   # 🔑 cached candles
 }
 
 for k, v in defaults.items():
@@ -91,6 +92,33 @@ if now - st.session_state.get("last_refresh", 0) >= REFRESH_INTERVAL:
 groww = None
 if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
+
+# =========================================================
+# FETCH CANDLES ONCE (SAFE)
+# =========================================================
+if groww and st.session_state.indicator_df is None:
+    try:
+        candles = groww.get_historical_candles(
+            groww.EXCHANGE_NSE,
+            groww.SEGMENT_CASH,
+            "NSE-NIFTY",
+            "2024-01-01 09:15:00",
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "15minute"   # ✅ safe interval
+        )
+
+        df = pd.DataFrame(
+            candles,
+            columns=["time", "open", "high", "low", "close", "volume"]
+        )
+        df["ema9"] = ema(df["close"], 9)
+        df["ema21"] = ema(df["close"], 21)
+        df["rsi"] = rsi(df["close"])
+
+        st.session_state.indicator_df = df
+
+    except Exception as e:
+        st.session_state.errors.append(str(e))
 
 # =========================================================
 # INDEX LTP + BALANCE (LOCKED)
@@ -150,24 +178,10 @@ if groww:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# TRADE LOGIC (NO FAKE TRADES)
+# SAFE TRADE LOGIC (NO FAKE TRADES)
 # =========================================================
-if groww and st.session_state.options_ltp:
-    candles = groww.get_historical_candles(
-        groww.EXCHANGE_NSE,
-        groww.SEGMENT_CASH,
-        "NSE-NIFTY",
-        "2024-01-01 09:15:00",
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "5minute"
-    )
-
-    df = pd.DataFrame(candles, columns=["time", "open", "high", "low", "close", "volume"])
-    df["ema9"] = ema(df["close"], 9)
-    df["ema21"] = ema(df["close"], 21)
-    df["rsi"] = rsi(df["close"])
-
-    latest = df.iloc[-1]
+if st.session_state.indicator_df is not None:
+    latest = st.session_state.indicator_df.iloc[-1]
 
     trend_ok = latest["ema9"] > latest["ema21"]
     rsi_ok = 35 < latest["rsi"] < 65
