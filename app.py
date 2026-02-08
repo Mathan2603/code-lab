@@ -12,34 +12,21 @@ st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
 st.title("🚀 Groww Live Paper Trading Bot")
 
 REFRESH_INTERVAL = 5
-PAPER_CAPITAL_INITIAL = 50000.0
+PAPER_CAPITAL = 50000.0
 IST = pytz.timezone("Asia/Kolkata")
 
 # =====================================================
-# SAFE LTP EXTRACTOR (LOCKED)
-# =====================================================
-def extract_ltp(val):
-    if isinstance(val, dict):
-        return val.get("ltp") or val.get("last_price") or val.get("price")
-    if isinstance(val, (int, float)):
-        return float(val)
-    return None
-
-# =====================================================
-# SESSION STATE — HARD RESET (CRITICAL)
+# SESSION STATE (SAFE INIT)
 # =====================================================
 ss = st.session_state
-
-# 🔥 FORCE RESET OLD DATA (THIS FIXES YOUR ERROR)
-ss.trades = []
-ss.paper_balance = PAPER_CAPITAL_INITIAL
-
 ss.setdefault("tokens", [""] * 5)
 ss.setdefault("bot_running", False)
-ss.setdefault("last_refresh", 0.0)
+ss.setdefault("paper_balance", PAPER_CAPITAL)
+ss.setdefault("trades", [])
 ss.setdefault("index_ltp", {})
 ss.setdefault("options_ltp", {})
 ss.setdefault("errors", [])
+ss.setdefault("last_refresh", 0.0)
 ss.setdefault("price_memory", {})
 
 # =====================================================
@@ -62,8 +49,8 @@ st.sidebar.caption("Auto refresh every 5 seconds")
 # =====================================================
 # TOP RIGHT TIME (IST)
 # =====================================================
-_, col_time = st.columns([9, 1])
-with col_time:
+_, time_col = st.columns([9, 1])
+with time_col:
     st.markdown(
         f"<div style='font-size:12px;text-align:right;'>"
         f"{datetime.now(IST).strftime('%H:%M:%S IST')}</div>",
@@ -86,9 +73,8 @@ if ss.bot_running and ss.tokens[0]:
     groww = GrowwAPI(ss.tokens[0])
 
 # =====================================================
-# TOKEN 1 — INDEX LTP + BALANCE (LOCKED)
+# TOKEN 1 — INDEX LTP (LOCKED)
 # =====================================================
-groww_balance = None
 if groww:
     try:
         resp = groww.get_ltp(
@@ -96,84 +82,47 @@ if groww:
             exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY")
         )
         for k, v in resp.items():
-            ltp = extract_ltp(v)
-            if ltp:
-                ss.index_ltp[k.replace("NSE_", "")] = ltp
-
-        bal = groww.get_available_margin_details()
-        groww_balance = bal.get("clear_cash")
-
+            ss.index_ltp[k.replace("NSE_", "")] = v["ltp"]
     except Exception as e:
         ss.errors.append(str(e))
 
 # =====================================================
-# MONTHLY + WEEKLY FNO LTP (LOCKED)
+# MONTHLY + WEEKLY FNO LTP (FIXED)
 # =====================================================
 monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
-    "NSE_NIFTY26FEB25500PE",
+    "NSE_NIFTY26FEB25500PE"
 ]
+
 weekly_symbol = "NIFTY2621025500CE"
 
 if groww:
     try:
+        # Monthly → get_ltp (batch)
         m = groww.get_ltp(
             segment=groww.SEGMENT_FNO,
             exchange_trading_symbols=tuple(monthly_symbols)
         )
         for k, v in m.items():
-            ltp = extract_ltp(v)
-            if ltp:
-                ss.options_ltp[k] = ltp
+            ss.options_ltp[k] = v["ltp"]
 
+        # ✅ Weekly → get_quote (FIXED EXCHANGE)
         q = groww.get_quote(
-            groww.EXCHANGE_NSE,
+            groww.EXCHANGE_NSE,     # ✅ FIX
             groww.SEGMENT_FNO,
             weekly_symbol
         )
-        wltp = extract_ltp(q)
-        if wltp:
-            ss.options_ltp[weekly_symbol] = wltp
+        ss.options_ltp[weekly_symbol] = q["ltp"]
 
     except Exception as e:
         ss.errors.append(str(e))
 
 # =====================================================
-# INDICATOR
-# =====================================================
-def should_enter_trade(symbol, ltp):
-    prev = ss.price_memory.get(symbol)
-    ss.price_memory[symbol] = ltp
-    if not prev:
-        return False
-    return abs((ltp - prev) / prev) * 100 >= 0.3
-
-# =====================================================
-# PAPER TRADE EXECUTION (CLEAN)
-# =====================================================
-for sym, ltp in ss.options_ltp.items():
-    if should_enter_trade(sym, ltp):
-        lot_size = 50
-        buy_value = lot_size * ltp
-        if ss.paper_balance >= buy_value:
-            ss.paper_balance -= buy_value
-            ss.trades.append({
-                "symbol": sym,
-                "buy_price": ltp,
-                "lot_size": lot_size,
-                "buy_value": buy_value,
-                "stop_loss": ltp * 0.70,
-                "status": "OPEN",
-                "sell_price": None
-            })
-        break  # one trade per cycle
-
-# =====================================================
 # TABLE 1
 # =====================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
-c1, c2 = st.columns([2, 1])
 
+c1, c2 = st.columns([2, 1])
 with c1:
     st.dataframe(
         pd.DataFrame(
@@ -187,11 +136,6 @@ with c2:
         f"""
         **Paper Trade Capital:**  
         <span style="color:green;font-weight:bold;">₹ {ss.paper_balance:.2f}</span>
-
-        **Groww Available Balance (LIVE):**  
-        <span style="color:{'green' if (groww_balance or 0) >= 0 else 'red'};font-weight:bold;">
-        ₹ {groww_balance if groww_balance is not None else '—'}
-        </span>
         """,
         unsafe_allow_html=True
     )
@@ -208,27 +152,13 @@ st.dataframe(
 )
 
 # =====================================================
-# TABLE 3 (100% SAFE)
+# TABLE 3 (EMPTY FOR NOW – SAFE)
 # =====================================================
 st.subheader("📜 Table 3: Trade History")
-
-rows = []
-for i, t in enumerate(ss.trades, 1):
-    rows.append({
-        "S.No": i,
-        "Symbol": t.get("symbol"),
-        "Buy Price": t.get("buy_price"),
-        "Lot Size": t.get("lot_size"),
-        "Buy Value": t.get("buy_value"),
-        "Stop Loss": t.get("stop_loss"),
-        "Live / Sold Price": ss.options_ltp.get(t.get("symbol")),
-        "Order Status": t.get("status")
-    })
-
-st.dataframe(pd.DataFrame(rows), use_container_width=True)
+st.dataframe(pd.DataFrame([]), use_container_width=True)
 
 # =====================================================
-# ERRORS
+# ERROR LOGS
 # =====================================================
 st.subheader("🛑 Error Logs")
 if ss.errors:
