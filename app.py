@@ -1,9 +1,8 @@
 import streamlit as st
 import pandas as pd
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from growwapi import GrowwAPI
-import matplotlib.pyplot as plt
 
 # =========================================================
 # CONFIG (LOCKED)
@@ -53,7 +52,7 @@ defaults = {
     "paper_balance": PAPER_CAPITAL_INITIAL,
     "trades": [],
     "last_trade_time": {},
-    "indicator_df": None,   # 🔑 cached candles
+    "indicator_df": None,
 }
 
 for k, v in defaults.items():
@@ -94,17 +93,20 @@ if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
 
 # =========================================================
-# FETCH CANDLES ONCE (SAFE)
+# FETCH INDICATORS (ONCE, SAFE RANGE)
 # =========================================================
 if groww and st.session_state.indicator_df is None:
     try:
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=60)  # ✅ under 90 days
+
         candles = groww.get_historical_candles(
             groww.EXCHANGE_NSE,
             groww.SEGMENT_CASH,
             "NSE-NIFTY",
-            "2024-01-01 09:15:00",
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "15minute"   # ✅ safe interval
+            start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "15minute"
         )
 
         df = pd.DataFrame(
@@ -124,7 +126,6 @@ if groww and st.session_state.indicator_df is None:
 # INDEX LTP + BALANCE (LOCKED)
 # =========================================================
 groww_balance = None
-
 if groww:
     try:
         resp = groww.get_ltp(
@@ -137,12 +138,11 @@ if groww:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
 
         groww_balance = groww.get_available_margin_details().get("clear_cash")
-
     except Exception as e:
         st.session_state.errors.append(str(e))
 
 # =========================================================
-# OPTION LTP ENGINES (LOCKED)
+# OPTION LTP FETCHERS (LOCKED)
 # =========================================================
 monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
