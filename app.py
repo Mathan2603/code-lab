@@ -26,7 +26,7 @@ def extract_ltp(val):
     return None
 
 # =====================================================
-# SESSION STATE
+# SESSION STATE INIT
 # =====================================================
 ss = st.session_state
 
@@ -38,14 +38,16 @@ ss.setdefault("options_ltp", {})
 ss.setdefault("paper_balance", PAPER_CAPITAL_INITIAL)
 ss.setdefault("trades", [])
 ss.setdefault("errors", [])
-ss.setdefault("price_memory", {})  # for indicators
+ss.setdefault("price_memory", {})
 
 # =====================================================
 # SIDEBAR (LOCKED UI)
 # =====================================================
 st.sidebar.header("🔑 Groww Tokens")
 for i in range(5):
-    ss.tokens[i] = st.sidebar.text_input(f"Token {i+1}", type="password", value=ss.tokens[i])
+    ss.tokens[i] = st.sidebar.text_input(
+        f"Token {i+1}", type="password", value=ss.tokens[i]
+    )
 
 c1, c2 = st.sidebar.columns(2)
 if c1.button("▶ Start Bot"):
@@ -56,16 +58,15 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =====================================================
-# TOP-RIGHT TIME (IST)
+# TOP RIGHT TIME (IST)
 # =====================================================
-with st.container():
-    colA, colB = st.columns([9, 1])
-    with colB:
-        st.markdown(
-            f"<div style='font-size:12px; text-align:right;'>"
-            f"{datetime.now(IST).strftime('%H:%M:%S IST')}</div>",
-            unsafe_allow_html=True
-        )
+_, col_time = st.columns([9, 1])
+with col_time:
+    st.markdown(
+        f"<div style='font-size:12px;text-align:right;'>"
+        f"{datetime.now(IST).strftime('%H:%M:%S IST')}</div>",
+        unsafe_allow_html=True
+    )
 
 # =====================================================
 # AUTO REFRESH (FIXED)
@@ -76,16 +77,17 @@ if ss.bot_running and (now - ss.last_refresh) >= REFRESH_INTERVAL:
     st.rerun()
 
 # =====================================================
-# INIT GROWW (TOKEN-1 ONLY)
+# INIT GROWW (TOKEN 1 ONLY)
 # =====================================================
 groww = None
 if ss.bot_running and ss.tokens[0]:
     groww = GrowwAPI(ss.tokens[0])
 
 # =====================================================
-# TOKEN-1: INDEX LTP + BALANCE (LOCKED)
+# TOKEN 1 — INDEX LTP + BALANCE (LOCKED)
 # =====================================================
 groww_balance = None
+
 if groww:
     try:
         resp = groww.get_ltp(
@@ -104,22 +106,21 @@ if groww:
         ss.errors.append(str(e))
 
 # =====================================================
-# MONTHLY & WEEKLY LTP (LOCKED)
+# MONTHLY + WEEKLY FNO LTP (LOCKED)
 # =====================================================
-monthly_syms = [
+monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
     "NSE_NIFTY26FEB25500PE",
 ]
-
-weekly_sym = "NIFTY2621025500CE"
+weekly_symbol = "NIFTY2621025500CE"
 
 if groww:
     try:
-        mresp = groww.get_ltp(
+        m = groww.get_ltp(
             segment=groww.SEGMENT_FNO,
-            exchange_trading_symbols=tuple(monthly_syms)
+            exchange_trading_symbols=tuple(monthly_symbols)
         )
-        for k, v in mresp.items():
+        for k, v in m.items():
             ltp = extract_ltp(v)
             if ltp:
                 ss.options_ltp[k] = ltp
@@ -127,59 +128,67 @@ if groww:
         q = groww.get_quote(
             groww.EXCHANGE_NSE,
             groww.SEGMENT_FNO,
-            weekly_sym
+            weekly_symbol
         )
         wltp = extract_ltp(q)
         if wltp:
-            ss.options_ltp[weekly_sym] = wltp
+            ss.options_ltp[weekly_symbol] = wltp
 
     except Exception as e:
         ss.errors.append(str(e))
 
 # =====================================================
-# INDICATORS + PAPER TRADE LOGIC
+# INDICATORS
 # =====================================================
 def should_enter_trade(symbol, ltp):
     prev = ss.price_memory.get(symbol)
     ss.price_memory[symbol] = ltp
     if not prev:
         return False
-    move_pct = abs((ltp - prev) / prev) * 100
-    return move_pct >= 0.3  # momentum filter
+    return abs((ltp - prev) / prev) * 100 >= 0.3
 
 def update_trade(trade, ltp):
-    if trade["status"] == "OPEN":
-        if ltp <= trade["stop_loss"]:
-            trade["status"] = "CLOSED"
-            trade["sell_price"] = ltp
+    if trade["status"] == "OPEN" and ltp <= trade["stop_loss"]:
+        trade["status"] = "CLOSED"
+        trade["sell_price"] = ltp
 
 # =====================================================
-# EXECUTION
+# NORMALIZE OLD TRADES (CRITICAL FIX)
+# =====================================================
+for t in ss.trades:
+    t.setdefault("status", "OPEN")
+    t.setdefault("sell_price", None)
+
+# =====================================================
+# PAPER TRADE EXECUTION
 # =====================================================
 for sym, ltp in ss.options_ltp.items():
-    open_trades = [t for t in ss.trades if t["symbol"] == sym and t["status"] == "OPEN"]
+    open_trades = [
+        t for t in ss.trades
+        if t.get("symbol") == sym and t.get("status") == "OPEN"
+    ]
+
     if not open_trades and should_enter_trade(sym, ltp):
         lot = 50
         buy_value = lot * ltp
         if ss.paper_balance >= buy_value:
-            sl = ltp * 0.70
             ss.paper_balance -= buy_value
             ss.trades.append({
                 "symbol": sym,
                 "buy_price": ltp,
                 "lot": lot,
                 "buy_value": buy_value,
-                "stop_loss": sl,
+                "stop_loss": ltp * 0.70,
                 "status": "OPEN",
                 "sell_price": None
             })
 
 for t in ss.trades:
-    if t["status"] == "OPEN" and t["symbol"] in ss.options_ltp:
+    if t.get("status") == "OPEN" and t["symbol"] in ss.options_ltp:
         update_trade(t, ss.options_ltp[t["symbol"]])
 
 # =====================================================
-# TABLE-1
+# TABLE 1
 # =====================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
 c1, c2 = st.columns([2, 1])
@@ -207,7 +216,7 @@ with c2:
     )
 
 # =====================================================
-# TABLE-2
+# TABLE 2
 # =====================================================
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.dataframe(
@@ -218,7 +227,7 @@ st.dataframe(
 )
 
 # =====================================================
-# TABLE-3 (FIXED)
+# TABLE 3 (FIXED STRUCTURE)
 # =====================================================
 st.subheader("📜 Table 3: Trade History")
 
@@ -231,7 +240,10 @@ for i, t in enumerate(ss.trades, 1):
         "Lot Size": t["lot"],
         "Buy Value": t["buy_value"],
         "Stop Loss": t["stop_loss"],
-        "Live / Sold Price": ss.options_ltp.get(t["symbol"]) if t["status"] == "OPEN" else t["sell_price"],
+        "Live / Sold Price":
+            ss.options_ltp.get(t["symbol"])
+            if t["status"] == "OPEN"
+            else t["sell_price"],
         "Order Status": t["status"]
     })
 
