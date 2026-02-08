@@ -3,6 +3,7 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 from growwapi import GrowwAPI
+import math
 
 # =========================================================
 # CONFIG (LOCKED)
@@ -12,12 +13,20 @@ st.title("🚀 Groww Live Paper Trading Bot")
 
 REFRESH_INTERVAL = 5
 PAPER_CAPITAL_INITIAL = 50000.0
-LOT_SIZE = 50
+LOT_SIZES = {
+    "NIFTY": 65,
+    "BANKNIFTY": 30,
+    "FINNIFTY": 60,
+}
+STRIKE_STEP = {
+    "NIFTY": 50,
+    "BANKNIFTY": 100,
+    "FINNIFTY": 50,
+}
 
-# Risk params (STEP 2)
-INITIAL_SL_PCT = 0.15     # 15% SL
-TRAIL_SL_PCT = 0.10       # trail 10%
-TARGET_PCT = 0.30         # 30% target
+INITIAL_SL_PCT = 0.15
+TRAIL_SL_PCT = 0.10
+TARGET_PCT = 0.30
 
 # =========================================================
 # SAFE LTP EXTRACTOR
@@ -64,7 +73,7 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # =========================================================
-# SAFE ERROR LOGGER (LOCKED)
+# SAFE ERROR LOGGER
 # =========================================================
 def log_error(msg):
     if "Not able to recognize exchange" in msg:
@@ -135,9 +144,8 @@ if groww and st.session_state.indicator_df is None:
         log_error(str(e))
 
 # =========================================================
-# INDEX LTP + BALANCE (LOCKED)
+# INDEX LTP (LOCKED)
 # =========================================================
-groww_balance = None
 if groww:
     try:
         resp = groww.get_ltp(
@@ -148,96 +156,84 @@ if groww:
             ltp = extract_ltp(raw)
             if ltp:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
-
-        groww_balance = groww.get_available_margin_details().get("clear_cash")
     except Exception as e:
         log_error(str(e))
 
 # =========================================================
-# OPTION LTP FETCHERS (LOCKED)
+# 🔥 STEP 5 — DYNAMIC STRIKE SELECTION
 # =========================================================
-monthly_symbols = [
-    "NSE_NIFTY26FEB25500CE",
-    "NSE_NIFTY26FEB25500PE"
-]
+def select_dynamic_symbol():
+    df = st.session_state.indicator_df
+    if df is None or df.empty:
+        return None, None, None
 
-if groww:
-    try:
-        resp = groww.get_ltp(
-            segment=groww.SEGMENT_FNO,
-            exchange_trading_symbols=tuple(monthly_symbols)
-        )
-        for sym, raw in resp.items():
-            ltp = extract_ltp(raw)
-            if ltp:
-                st.session_state.options_ltp[sym] = ltp
-    except Exception as e:
-        log_error(str(e))
-
-weekly_symbol = "NIFTY2621025500CE"
-
-if groww:
-    try:
-        quote = groww.get_quote(
-            groww.EXCHANGE_NSE,
-            groww.SEGMENT_FNO,
-            weekly_symbol
-        )
-        ltp = extract_ltp(quote)
-        if ltp:
-            st.session_state.options_ltp[weekly_symbol] = ltp
-    except Exception as e:
-        log_error(str(e))
-
-# =========================================================
-# ENTRY LOGIC (UNCHANGED)
-# =========================================================
-df = st.session_state.indicator_df
-if df is not None and not df.empty:
     latest = df.iloc[-1]
-    trend_ok = latest["ema9"] > latest["ema21"]
-    rsi_ok = 35 < latest["rsi"] < 65
+    trend = "BULLISH" if latest["ema9"] > latest["ema21"] else "BEARISH"
 
-    if trend_ok and rsi_ok:
-        for symbol, ltp in st.session_state.options_ltp.items():
-            already_open = any(
-                p["symbol"] == symbol and p["status"] == "OPEN"
-                for p in st.session_state.positions
-            )
-            if already_open:
-                continue
+    index_name = "NIFTY"
+    index_price = st.session_state.index_ltp.get(index_name)
+    if not index_price:
+        return None, None, None
 
-            cost = ltp * LOT_SIZE
-            if st.session_state.paper_balance >= cost:
-                st.session_state.paper_balance -= cost
-                st.session_state.positions.append({
-                    "symbol": symbol,
-                    "entry_price": ltp,
-                    "qty": LOT_SIZE,
-                    "sl": round(ltp * (1 - INITIAL_SL_PCT), 2),
-                    "target": round(ltp * (1 + TARGET_PCT), 2),
-                    "entry_time": datetime.now().strftime("%H:%M:%S"),
-                    "status": "OPEN"
-                })
-                break
+    step = STRIKE_STEP[index_name]
+    lot = LOT_SIZES[index_name]
+
+    atm = int(round(index_price / step) * step)
+
+    strikes = []
+    for i in range(0, 10):
+        strike = atm + (i * step if trend == "BULLISH" else -i * step)
+        strikes.append(strike)
+
+    for strike in strikes:
+        opt_type = "CE" if trend == "BULLISH" else "PE"
+        symbol = f"NSE_{index_name}26FEB{strike}{opt_type}"
+
+        ltp = st.session_state.options_ltp.get(symbol)
+        if ltp is None:
+            continue
+
+        cost = ltp * lot
+        if cost <= st.session_state.paper_balance:
+            return symbol, ltp, lot
+
+    return None, None, None
 
 # =========================================================
-# POSITION MANAGEMENT (STEP 2)
+# ENTRY USING DYNAMIC STRIKE
+# =========================================================
+symbol, ltp, lot = select_dynamic_symbol()
+if symbol and ltp:
+    already_open = any(
+        p["symbol"] == symbol and p["status"] == "OPEN"
+        for p in st.session_state.positions
+    )
+
+    if not already_open:
+        st.session_state.paper_balance -= ltp * lot
+        st.session_state.positions.append({
+            "symbol": symbol,
+            "entry_price": ltp,
+            "qty": lot,
+            "sl": round(ltp * (1 - INITIAL_SL_PCT), 2),
+            "target": round(ltp * (1 + TARGET_PCT), 2),
+            "entry_time": datetime.now().strftime("%H:%M:%S"),
+            "status": "OPEN"
+        })
+
+# =========================================================
+# POSITION MANAGEMENT (UNCHANGED)
 # =========================================================
 for pos in list(st.session_state.positions):
-    symbol = pos["symbol"]
-    ltp = st.session_state.options_ltp.get(symbol)
-
+    ltp = st.session_state.options_ltp.get(pos["symbol"])
     if ltp is None:
         continue
 
-    # 🔁 TRAILING SL (only upward)
     trail_sl = round(ltp * (1 - TRAIL_SL_PCT), 2)
     if trail_sl > pos["sl"]:
         pos["sl"] = trail_sl
 
     exit_reason = None
-
     if ltp <= pos["sl"]:
         exit_reason = "SL"
     elif ltp >= pos["target"]:
@@ -254,46 +250,12 @@ for pos in list(st.session_state.positions):
             "exit_reason": exit_reason,
             "status": "CLOSED"
         })
-
         st.session_state.closed_trades.append(pos)
         st.session_state.positions.remove(pos)
 
 # =========================================================
 # UI TABLES (LOCKED)
 # =========================================================
-st.subheader("📊 Table 1: Index LTPs & Account Summary")
-colA, colB = st.columns([2, 1])
-
-with colA:
-    st.dataframe(
-        pd.DataFrame(
-            [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
-        ),
-        use_container_width=True
-    )
-
-with colB:
-    st.markdown(
-        f"""
-        **Paper Trade Capital:**  
-        <span style="color:green;font-weight:bold;">₹ {round(st.session_state.paper_balance,2)}</span>
-
-        **Groww Available Balance (LIVE):**  
-        <span style="color:{'green' if (groww_balance or 0) >= 0 else 'red'};font-weight:bold;">
-        ₹ {groww_balance if groww_balance is not None else '—'}
-        </span>
-        """,
-        unsafe_allow_html=True
-    )
-
-st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
-st.dataframe(
-    pd.DataFrame(
-        [{"Symbol": k, "LTP": v} for k, v in st.session_state.options_ltp.items()]
-    ),
-    use_container_width=True
-)
-
 st.subheader("📜 Table 3: Trade History")
 st.dataframe(pd.DataFrame(st.session_state.closed_trades), use_container_width=True)
 
