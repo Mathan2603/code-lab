@@ -53,7 +53,7 @@ defaults = {
     "errors": [],
     "index_ltp": {},
     "options_ltp": {},
-    "nearest_option_ltp": {},   # ✅ NEW
+    "nearest_option_ltp": {},
     "paper_balance": PAPER_CAPITAL_INITIAL,
     "positions": [],
     "closed_trades": [],
@@ -97,7 +97,7 @@ now = time.time()
 if st.session_state.bot_running:
     if now - st.session_state.last_refresh >= REFRESH_INTERVAL:
         st.session_state.last_refresh = now
-        st.experimental_rerun()
+        st.rerun()
 
 # =========================================================
 # INIT GROWW
@@ -159,7 +159,7 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# ✅ NEAREST STRIKE FETCHER (FETCHED, NOT UI)
+# NEAREST STRIKE FETCHER (LOCKED LOGIC)
 # =========================================================
 STRIKE_RULES = {
     "NIFTY": 50,
@@ -183,7 +183,6 @@ if groww and st.session_state.index_ltp:
                 symbols.append(f"NSE_{index}26FEB{strike}CE")
                 symbols.append(f"NSE_{index}26FEB{strike}PE")
 
-        # Fetch in batches of 50
         for i in range(0, len(symbols), 50):
             batch = symbols[i:i+50]
             resp = groww.get_ltp(
@@ -199,27 +198,15 @@ if groww and st.session_state.index_ltp:
         log_error(str(e))
 
 # =========================================================
-# UI TABLES (LOCKED – UNCHANGED)
+# UI TABLES (LOCKED)
 # =========================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
-colA, colB = st.columns([2, 1])
-
-with colA:
-    st.dataframe(
-        pd.DataFrame(
-            [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
-        ),
-        use_container_width=True
-    )
-
-with colB:
-    st.markdown(
-        f"""
-        **Paper Trade Capital:**  
-        <span style="color:green;font-weight:bold;">₹ {round(st.session_state.paper_balance,2)}</span>
-        """,
-        unsafe_allow_html=True
-    )
+st.dataframe(
+    pd.DataFrame(
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
+    ),
+    use_container_width=True
+)
 
 st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
 st.dataframe(
