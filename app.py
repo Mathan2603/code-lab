@@ -14,13 +14,13 @@ REFRESH_INTERVAL = 5
 PAPER_CAPITAL_INITIAL = 50000.0
 LOT_SIZE = 50
 
-# STEP 2 – Risk Params (LOCKED)
-INITIAL_SL_PCT = 0.15
-TRAIL_SL_PCT = 0.10
-TARGET_PCT = 0.30
+# Risk params (STEP 2)
+INITIAL_SL_PCT = 0.15     # 15% SL
+TRAIL_SL_PCT = 0.10       # trail 10%
+TARGET_PCT = 0.30         # 30% target
 
 # =========================================================
-# SAFE LTP EXTRACTOR (LOCKED)
+# SAFE LTP EXTRACTOR
 # =========================================================
 def extract_ltp(value):
     if isinstance(value, dict):
@@ -30,7 +30,7 @@ def extract_ltp(value):
     return None
 
 # =========================================================
-# INDICATORS (LOCKED)
+# INDICATORS
 # =========================================================
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -72,7 +72,7 @@ def log_error(msg):
     st.session_state.errors.append(msg)
 
 # =========================================================
-# SIDEBAR UI (LOCKED)
+# SIDEBAR (LOCKED UI)
 # =========================================================
 st.sidebar.header("🔑 Groww Tokens")
 for i in range(5):
@@ -89,7 +89,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================================================
-# AUTO REFRESH (LOCKED)
+# AUTO REFRESH
 # =========================================================
 now = time.time()
 if now - st.session_state.get("last_refresh", 0) >= REFRESH_INTERVAL:
@@ -105,7 +105,7 @@ if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
 
 # =========================================================
-# FETCH INDICATORS (ONCE – LOCKED)
+# FETCH INDICATORS (ONCE)
 # =========================================================
 if groww and st.session_state.indicator_df is None:
     try:
@@ -135,8 +135,9 @@ if groww and st.session_state.indicator_df is None:
         log_error(str(e))
 
 # =========================================================
-# INDEX LTP FETCHER (LOCKED)
+# INDEX LTP + BALANCE (LOCKED)
 # =========================================================
+groww_balance = None
 if groww:
     try:
         resp = groww.get_ltp(
@@ -147,6 +148,8 @@ if groww:
             ltp = extract_ltp(raw)
             if ltp:
                 st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
+
+        groww_balance = groww.get_available_margin_details().get("clear_cash")
     except Exception as e:
         log_error(str(e))
 
@@ -187,7 +190,7 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# ENTRY LOGIC (STEP 2 – RESTORED)
+# ENTRY LOGIC (UNCHANGED)
 # =========================================================
 df = st.session_state.indicator_df
 if df is not None and not df.empty:
@@ -222,16 +225,19 @@ if df is not None and not df.empty:
 # POSITION MANAGEMENT (STEP 2)
 # =========================================================
 for pos in list(st.session_state.positions):
-    ltp = st.session_state.options_ltp.get(pos["symbol"])
+    symbol = pos["symbol"]
+    ltp = st.session_state.options_ltp.get(symbol)
+
     if ltp is None:
         continue
 
-    # Trailing SL (only upward)
+    # 🔁 TRAILING SL (only upward)
     trail_sl = round(ltp * (1 - TRAIL_SL_PCT), 2)
     if trail_sl > pos["sl"]:
         pos["sl"] = trail_sl
 
     exit_reason = None
+
     if ltp <= pos["sl"]:
         exit_reason = "SL"
     elif ltp >= pos["target"]:
@@ -248,17 +254,51 @@ for pos in list(st.session_state.positions):
             "exit_reason": exit_reason,
             "status": "CLOSED"
         })
+
         st.session_state.closed_trades.append(pos)
         st.session_state.positions.remove(pos)
 
 # =========================================================
 # UI TABLES (LOCKED)
 # =========================================================
+st.subheader("📊 Table 1: Index LTPs & Account Summary")
+colA, colB = st.columns([2, 1])
+
+with colA:
+    st.dataframe(
+        pd.DataFrame(
+            [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
+        ),
+        use_container_width=True
+    )
+
+with colB:
+    st.markdown(
+        f"""
+        **Paper Trade Capital:**  
+        <span style="color:green;font-weight:bold;">₹ {round(st.session_state.paper_balance,2)}</span>
+
+        **Groww Available Balance (LIVE):**  
+        <span style="color:{'green' if (groww_balance or 0) >= 0 else 'red'};font-weight:bold;">
+        ₹ {groww_balance if groww_balance is not None else '—'}
+        </span>
+        """,
+        unsafe_allow_html=True
+    )
+
+st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
+st.dataframe(
+    pd.DataFrame(
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.options_ltp.items()]
+    ),
+    use_container_width=True
+)
+
 st.subheader("📜 Table 3: Trade History")
 st.dataframe(pd.DataFrame(st.session_state.closed_trades), use_container_width=True)
 
 # =========================================================
-# ERROR LOGS (LOCKED)
+# ERROR LOGS
 # =========================================================
 st.subheader("🛑 Error Logs")
 if st.session_state.errors:
