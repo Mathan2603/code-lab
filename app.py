@@ -204,21 +204,9 @@ try:
 except Exception as exc:
     log_error("token1", "get_ltp", "NSE_INDEX", exc)
 
-try:
-    st.session_state.account_summary["portfolio"] = gw_index.get_portfolio()
-except Exception as exc:
-    log_error("token1", "get_portfolio", "PORTFOLIO", exc)
-
-try:
-    st.session_state.account_summary["positions"] = gw_index.get_positions()
-except Exception as exc:
-    log_error("token1", "get_positions", "POSITIONS", exc)
-
-try:
-    st.session_state.account_summary["margin"] = gw_index.get_margin()
-except Exception as exc:
-    log_error("token1", "get_margin", "MARGIN", exc)
-
+margin_info = st.session_state.account_summary.get("margin")
+if isinstance(margin_info, dict):
+    available_margin = margin_info.get("available", available_margin)
 # =========================================================
 # 2️⃣ EXPIRY DETECTION (MONTHLY + WEEKLY)
 # =========================================================
