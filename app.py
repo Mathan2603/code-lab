@@ -53,11 +53,12 @@ defaults = {
     "errors": [],
     "index_ltp": {},
     "options_ltp": {},
-    "nearest_option_ltp": {},   # 🔥 NEW
+    "nearest_option_ltp": {},   # ✅ NEW
     "paper_balance": PAPER_CAPITAL_INITIAL,
     "positions": [],
     "closed_trades": [],
     "indicator_df": None,
+    "last_refresh": 0,
 }
 
 for k, v in defaults.items():
@@ -90,13 +91,13 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================================================
-# AUTO REFRESH (HARD LOCKED)
+# ✅ CORRECT AUTO REFRESH (FIXED)
 # =========================================================
 now = time.time()
-if now - st.session_state.get("last_refresh", 0) >= REFRESH_INTERVAL:
-    st.session_state.last_refresh = now
-    if st.session_state.bot_running:
-        st.rerun()
+if st.session_state.bot_running:
+    if now - st.session_state.last_refresh >= REFRESH_INTERVAL:
+        st.session_state.last_refresh = now
+        st.experimental_rerun()
 
 # =========================================================
 # INIT GROWW
@@ -122,7 +123,7 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# OPTION LTP FETCHERS (LOCKED – EXISTING)
+# OPTION LTP FETCHERS (LOCKED)
 # =========================================================
 monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
@@ -158,34 +159,33 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# 🔥 NEW: NEAREST STRIKE AUTO FETCHER
+# ✅ NEAREST STRIKE FETCHER (FETCHED, NOT UI)
 # =========================================================
-STRIKE_CONFIG = {
-    "NIFTY": {"step": 50},
-    "BANKNIFTY": {"step": 100},
-    "FINNIFTY": {"step": 50},
+STRIKE_RULES = {
+    "NIFTY": 50,
+    "BANKNIFTY": 100,
+    "FINNIFTY": 50
 }
 
 if groww and st.session_state.index_ltp:
     try:
-        symbols_to_fetch = []
+        symbols = []
 
-        for index, cfg in STRIKE_CONFIG.items():
-            ltp = st.session_state.index_ltp.get(index)
-            if not ltp:
+        for index, step in STRIKE_RULES.items():
+            index_ltp = st.session_state.index_ltp.get(index)
+            if not index_ltp:
                 continue
 
-            step = cfg["step"]
-            atm = int(round(ltp / step) * step)
+            atm = int(round(index_ltp / step) * step)
 
             for i in range(-10, 11):
                 strike = atm + (i * step)
-                symbols_to_fetch.append(f"NSE_{index}26FEB{strike}CE")
-                symbols_to_fetch.append(f"NSE_{index}26FEB{strike}PE")
+                symbols.append(f"NSE_{index}26FEB{strike}CE")
+                symbols.append(f"NSE_{index}26FEB{strike}PE")
 
-        # Batch in chunks of 50 (Groww limit)
-        for i in range(0, len(symbols_to_fetch), 50):
-            batch = symbols_to_fetch[i:i+50]
+        # Fetch in batches of 50
+        for i in range(0, len(symbols), 50):
+            batch = symbols[i:i+50]
             resp = groww.get_ltp(
                 segment=groww.SEGMENT_FNO,
                 exchange_trading_symbols=tuple(batch)
