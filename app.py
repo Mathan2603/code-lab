@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from growwapi import GrowwAPI
 import math
 
@@ -13,14 +13,9 @@ st.title("🚀 Groww Live Paper Trading Bot")
 
 REFRESH_INTERVAL = 5
 PAPER_CAPITAL_INITIAL = 50000.0
-LOT_SIZE = 50
-
-INITIAL_SL_PCT = 0.15
-TRAIL_SL_PCT = 0.10
-TARGET_PCT = 0.30
 
 # =========================================================
-# SAFE LTP EXTRACTOR (LOCKED)
+# SAFE LTP EXTRACTOR
 # =========================================================
 def extract_ltp(value):
     if isinstance(value, dict):
@@ -30,21 +25,6 @@ def extract_ltp(value):
     return None
 
 # =========================================================
-# INDICATORS (LOCKED)
-# =========================================================
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
-
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-# =========================================================
 # SESSION STATE
 # =========================================================
 defaults = {
@@ -52,12 +32,10 @@ defaults = {
     "bot_running": False,
     "errors": [],
     "index_ltp": {},
-    "options_ltp": {},
-    "nearest_option_ltp": {},
+    "options_ltp": {},              # existing working fetcher
+    "nearest_option_ltp": {},       # NEW (nearest strikes)
     "paper_balance": PAPER_CAPITAL_INITIAL,
-    "positions": [],
     "closed_trades": [],
-    "indicator_df": None,
     "last_refresh": 0,
 }
 
@@ -66,7 +44,7 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # =========================================================
-# SAFE ERROR LOGGER (LOCKED)
+# ERROR LOGGER (LOCKED)
 # =========================================================
 def log_error(msg):
     if "Not able to recognize exchange" in msg:
@@ -91,7 +69,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================================================
-# ✅ CORRECT AUTO REFRESH (FIXED)
+# AUTO REFRESH (CORRECT)
 # =========================================================
 now = time.time()
 if st.session_state.bot_running:
@@ -107,7 +85,7 @@ if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
 
 # =========================================================
-# INDEX LTP FETCHER (LOCKED)
+# INDEX LTP FETCHER (LOCKED & WORKING)
 # =========================================================
 if groww:
     try:
@@ -123,7 +101,7 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# OPTION LTP FETCHERS (LOCKED)
+# EXISTING MONTHLY & WEEKLY OPTION FETCHERS (DO NOT TOUCH)
 # =========================================================
 monthly_symbols = [
     "NSE_NIFTY26FEB25500CE",
@@ -159,12 +137,12 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# NEAREST STRIKE FETCHER (LOCKED LOGIC)
+# ✅ NEW: NEAREST STRIKE FETCHER (MONTHLY ONLY, SAFE)
 # =========================================================
 STRIKE_RULES = {
     "NIFTY": 50,
     "BANKNIFTY": 100,
-    "FINNIFTY": 50
+    "FINNIFTY": 50,
 }
 
 if groww and st.session_state.index_ltp:
@@ -183,6 +161,7 @@ if groww and st.session_state.index_ltp:
                 symbols.append(f"NSE_{index}26FEB{strike}CE")
                 symbols.append(f"NSE_{index}26FEB{strike}PE")
 
+        # batch fetch (≤50 symbols)
         for i in range(0, len(symbols), 50):
             batch = symbols[i:i+50]
             resp = groww.get_ltp(
@@ -219,9 +198,6 @@ st.dataframe(
 st.subheader("📜 Table 3: Trade History")
 st.dataframe(pd.DataFrame(st.session_state.closed_trades), use_container_width=True)
 
-# =========================================================
-# ERROR LOGS (LOCKED)
-# =========================================================
 st.subheader("🛑 Error Logs")
 if st.session_state.errors:
     for err in st.session_state.errors[-5:]:
