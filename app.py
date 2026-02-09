@@ -6,17 +6,17 @@ from growwapi import GrowwAPI
 import math
 
 # =========================================================
-# CONFIG (LOCKED)
+# UI CONFIG (LOCKED)
 # =========================================================
 st.set_page_config(page_title="Groww Live Paper Trading Bot", layout="wide")
 st.title("🚀 Groww Live Paper Trading Bot")
 
 REFRESH_INTERVAL = 5
-PAPER_CAPITAL_INITIAL = 50000.0
+PAPER_CAPITAL = 50000.0
 LOT_SIZE = 50
 
 # =========================================================
-# SAFE LTP EXTRACTOR
+# HELPERS
 # =========================================================
 def extract_ltp(v):
     if isinstance(v, dict):
@@ -25,37 +25,26 @@ def extract_ltp(v):
         return float(v)
     return None
 
-# =========================================================
-# SESSION STATE
-# =========================================================
-defaults = {
-    "tokens": ["", "", "", "", ""],
-    "bot_running": False,
-    "errors": [],
-    "index_ltp": {},
-    "options_ltp": {},
-    "nearest_option_ltp": {},
-    "nearest_table": [],
-    "paper_balance": PAPER_CAPITAL_INITIAL,
-    "positions": [],
-    "closed_trades": [],
-    "expiry_map": {},
-}
-
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-# =========================================================
-# ERROR LOGGER (LOCKED)
-# =========================================================
 def log_error(msg):
-    if "Not able to recognize exchange" in msg:
-        return
-    st.session_state.errors.append(msg)
+    st.session_state.errors.append(str(msg))
 
 # =========================================================
-# SIDEBAR (LOCKED UI)
+# SESSION STATE INIT
+# =========================================================
+if "init" not in st.session_state:
+    st.session_state.init = True
+    st.session_state.tokens = ["", "", "", "", ""]
+    st.session_state.bot_running = False
+    st.session_state.errors = []
+    st.session_state.index_ltp = {}
+    st.session_state.monthly_ltp = {}
+    st.session_state.weekly_ltp = {}
+    st.session_state.nearest_strikes = []
+    st.session_state.trades = []
+    st.session_state.last_refresh = 0
+
+# =========================================================
+# SIDEBAR (LOCKED)
 # =========================================================
 st.sidebar.header("🔑 Groww Tokens")
 for i in range(5):
@@ -72,139 +61,122 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================================================
-# INIT TOKENS
+# STOP EARLY IF BOT NOT RUNNING
 # =========================================================
-gw_index = GrowwAPI(st.session_state.tokens[0]) if st.session_state.tokens[0] else None
-gw_monthly = GrowwAPI(st.session_state.tokens[1]) if st.session_state.tokens[1] else None
-gw_weekly = GrowwAPI(st.session_state.tokens[2]) if st.session_state.tokens[2] else None
+if not st.session_state.bot_running:
+    st.info("Bot stopped")
+    st.stop()
 
 # =========================================================
-# INDEX LTP (TOKEN 1)
+# INIT GROWW CLIENTS (TOKEN SPLIT)
 # =========================================================
-if gw_index:
-    try:
-        resp = gw_index.get_ltp(
-            segment=gw_index.SEGMENT_CASH,
-            exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY")
+gw_index = GrowwAPI(st.session_state.tokens[0])
+gw_monthly = GrowwAPI(st.session_state.tokens[1])
+gw_weekly = GrowwAPI(st.session_state.tokens[2])
+
+# =========================================================
+# 1️⃣ FETCH INDEX LTPs (TOKEN 1)
+# =========================================================
+try:
+    resp = gw_index.get_ltp(
+        segment=gw_index.SEGMENT_CASH,
+        exchange_trading_symbols=("NSE_NIFTY", "NSE_BANKNIFTY", "NSE_FINNIFTY")
+    )
+    st.session_state.index_ltp.clear()
+    for sym, raw in resp.items():
+        ltp = extract_ltp(raw)
+        if ltp:
+            st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
+except Exception as e:
+    log_error(e)
+
+# =========================================================
+# 2️⃣ AUTO EXPIRY DETECTION (MONTHLY ONLY)
+# =========================================================
+expiry_map = {}
+try:
+    for idx in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
+        expiries = gw_index.get_expiries(gw_index.EXCHANGE_NSE, idx)
+        if expiries:
+            expiry_map[idx] = expiries[0]  # nearest monthly
+except Exception as e:
+    log_error(e)
+
+# =========================================================
+# 3️⃣ NEAREST STRIKE CALCULATION
+# =========================================================
+STRIKE_STEP = {
+    "NIFTY": 50,
+    "BANKNIFTY": 100,
+    "FINNIFTY": 50
+}
+
+nearest_symbols = []
+nearest_rows = []
+
+for idx, ltp in st.session_state.index_ltp.items():
+    if idx not in expiry_map:
+        continue
+
+    step = STRIKE_STEP[idx]
+    atm = round(ltp / step) * step
+    expiry = expiry_map[idx].replace("-", "")
+
+    for i in range(-10, 11):
+        strike = int(atm + i * step)
+        for opt in ["CE", "PE"]:
+            symbol = f"NSE_{idx}{expiry}{strike}{opt}"
+            nearest_symbols.append(symbol)
+            nearest_rows.append({
+                "Index": idx,
+                "Symbol": symbol,
+                "Strike": strike,
+                "Type": opt,
+                "LTP": None
+            })
+
+# =========================================================
+# 4️⃣ FETCH NEAREST STRIKE LTPs (TOKEN 2, BATCHED)
+# =========================================================
+try:
+    for i in range(0, len(nearest_symbols), 50):
+        batch = nearest_symbols[i:i+50]
+        resp = gw_monthly.get_ltp(
+            segment=gw_monthly.SEGMENT_FNO,
+            exchange_trading_symbols=tuple(batch)
         )
         for sym, raw in resp.items():
             ltp = extract_ltp(raw)
             if ltp:
-                st.session_state.index_ltp[sym.replace("NSE_", "")] = ltp
-    except Exception as e:
-        log_error(str(e))
+                st.session_state.monthly_ltp[sym] = ltp
+except Exception as e:
+    log_error(e)
+
+# attach LTPs
+for row in nearest_rows:
+    row["LTP"] = st.session_state.monthly_ltp.get(row["Symbol"])
+
+st.session_state.nearest_strikes = nearest_rows
 
 # =========================================================
-# AUTO EXPIRY DETECTION (TOKEN 1)
-# =========================================================
-if gw_index:
-    try:
-        for idx in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
-            exps = gw_index.get_expiries(gw_index.EXCHANGE_NSE, idx)
-            if exps:
-                st.session_state.expiry_map[idx] = exps[0]  # nearest
-    except Exception as e:
-        log_error(str(e))
-
-# =========================================================
-# NEAREST STRIKE FETCHER (TOKEN 2)
-# =========================================================
-STRIKE_RULES = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50}
-
-if gw_monthly and st.session_state.index_ltp and st.session_state.expiry_map:
-    try:
-        symbols = []
-        table_rows = []
-
-        for idx, step in STRIKE_RULES.items():
-            ltp = st.session_state.index_ltp.get(idx)
-            expiry = st.session_state.expiry_map.get(idx)
-            if not ltp or not expiry:
-                continue
-
-            atm = int(round(ltp / step) * step)
-
-            for i in range(-10, 11):
-                strike = atm + (i * step)
-                for opt in ["CE", "PE"]:
-                    sym = f"NSE_{idx}{expiry.replace('-','')}{strike}{opt}"
-                    symbols.append(sym)
-                    table_rows.append({
-                        "Index": idx,
-                        "Symbol": sym,
-                        "Strike": strike,
-                        "Type": opt,
-                        "LTP": None
-                    })
-
-        for i in range(0, len(symbols), 50):
-            batch = symbols[i:i+50]
-            resp = gw_monthly.get_ltp(
-                segment=gw_monthly.SEGMENT_FNO,
-                exchange_trading_symbols=tuple(batch)
-            )
-            for sym, raw in resp.items():
-                ltp = extract_ltp(raw)
-                if ltp:
-                    st.session_state.nearest_option_ltp[sym] = ltp
-
-        for row in table_rows:
-            row["LTP"] = st.session_state.nearest_option_ltp.get(row["Symbol"])
-
-        st.session_state.nearest_table = table_rows
-
-    except Exception as e:
-        log_error(str(e))
-
-# =========================================================
-# STRATEGY USING NEAREST STRIKES
-# =========================================================
-for row in st.session_state.nearest_table:
-    if row["LTP"] is None:
-        continue
-
-    already = any(p["symbol"] == row["Symbol"] for p in st.session_state.positions)
-    if already:
-        continue
-
-    if st.session_state.paper_balance < row["LTP"] * LOT_SIZE:
-        continue
-
-    # SIMPLE FILTER: trade only ATM ±1
-    idx_ltp = st.session_state.index_ltp.get(row["Index"])
-    if not idx_ltp:
-        continue
-
-    if abs(row["Strike"] - idx_ltp) > STRIKE_RULES[row["Index"]]:
-        continue
-
-    st.session_state.paper_balance -= row["LTP"] * LOT_SIZE
-    st.session_state.positions.append({
-        "symbol": row["Symbol"],
-        "entry_price": row["LTP"],
-        "qty": LOT_SIZE,
-        "time": datetime.now().strftime("%H:%M:%S")
-    })
-    break
-
-# =========================================================
-# UI TABLES (LOCKED + ONE NEW TABLE)
+# UI TABLES (LOCKED STRUCTURE)
 # =========================================================
 st.subheader("📊 Table 1: Index LTPs & Account Summary")
-st.dataframe(pd.DataFrame(
-    [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
-), use_container_width=True)
-
-st.subheader("📈 Table 2: Monthly & Weekly Option LTPs")
-st.dataframe(pd.DataFrame(
-    [{"Symbol": k, "LTP": v} for k, v in st.session_state.options_ltp.items()]
-), use_container_width=True)
+st.dataframe(
+    pd.DataFrame(
+        [{"Symbol": k, "LTP": v} for k, v in st.session_state.index_ltp.items()]
+    ),
+    use_container_width=True
+)
 
 st.subheader("📌 Table 2A: Nearest Strikes (Auto)")
-st.dataframe(pd.DataFrame(st.session_state.nearest_table), use_container_width=True)
+st.dataframe(
+    pd.DataFrame(st.session_state.nearest_strikes),
+    use_container_width=True
+)
 
 st.subheader("📜 Table 3: Trade History")
-st.dataframe(pd.DataFrame(st.session_state.closed_trades), use_container_width=True)
+st.dataframe(pd.DataFrame(st.session_state.trades), use_container_width=True)
 
 st.subheader("🛑 Error Logs")
 if st.session_state.errors:
