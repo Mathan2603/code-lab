@@ -3,7 +3,6 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 from growwapi import GrowwAPI
-import math
 
 # =========================================================
 # CONFIG (LOCKED)
@@ -13,23 +12,15 @@ st.title("🚀 Groww Live Paper Trading Bot")
 
 REFRESH_INTERVAL = 5
 PAPER_CAPITAL_INITIAL = 50000.0
-LOT_SIZES = {
-    "NIFTY": 65,
-    "BANKNIFTY": 30,
-    "FINNIFTY": 60,
-}
-STRIKE_STEP = {
-    "NIFTY": 50,
-    "BANKNIFTY": 100,
-    "FINNIFTY": 50,
-}
+LOT_SIZE = 50
 
+# STEP 2 – Risk Params (LOCKED)
 INITIAL_SL_PCT = 0.15
 TRAIL_SL_PCT = 0.10
 TARGET_PCT = 0.30
 
 # =========================================================
-# SAFE LTP EXTRACTOR
+# SAFE LTP EXTRACTOR (LOCKED)
 # =========================================================
 def extract_ltp(value):
     if isinstance(value, dict):
@@ -39,7 +30,7 @@ def extract_ltp(value):
     return None
 
 # =========================================================
-# INDICATORS
+# INDICATORS (LOCKED)
 # =========================================================
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -73,7 +64,7 @@ for k, v in defaults.items():
         st.session_state[k] = v
 
 # =========================================================
-# SAFE ERROR LOGGER
+# SAFE ERROR LOGGER (LOCKED)
 # =========================================================
 def log_error(msg):
     if "Not able to recognize exchange" in msg:
@@ -81,7 +72,7 @@ def log_error(msg):
     st.session_state.errors.append(msg)
 
 # =========================================================
-# SIDEBAR (LOCKED UI)
+# SIDEBAR UI (LOCKED)
 # =========================================================
 st.sidebar.header("🔑 Groww Tokens")
 for i in range(5):
@@ -98,7 +89,7 @@ if c2.button("⏹ Stop Bot"):
 st.sidebar.caption("Auto refresh every 5 seconds")
 
 # =========================================================
-# AUTO REFRESH
+# AUTO REFRESH (LOCKED)
 # =========================================================
 now = time.time()
 if now - st.session_state.get("last_refresh", 0) >= REFRESH_INTERVAL:
@@ -114,7 +105,7 @@ if st.session_state.bot_running and st.session_state.tokens[0]:
     groww = GrowwAPI(st.session_state.tokens[0])
 
 # =========================================================
-# FETCH INDICATORS (ONCE)
+# FETCH INDICATORS (ONCE – LOCKED)
 # =========================================================
 if groww and st.session_state.indicator_df is None:
     try:
@@ -144,7 +135,7 @@ if groww and st.session_state.indicator_df is None:
         log_error(str(e))
 
 # =========================================================
-# INDEX LTP (LOCKED)
+# INDEX LTP FETCHER (LOCKED)
 # =========================================================
 if groww:
     try:
@@ -160,75 +151,82 @@ if groww:
         log_error(str(e))
 
 # =========================================================
-# 🔥 STEP 5 — DYNAMIC STRIKE SELECTION
+# OPTION LTP FETCHERS (LOCKED)
 # =========================================================
-def select_dynamic_symbol():
-    df = st.session_state.indicator_df
-    if df is None or df.empty:
-        return None, None, None
+monthly_symbols = [
+    "NSE_NIFTY26FEB25500CE",
+    "NSE_NIFTY26FEB25500PE"
+]
 
+if groww:
+    try:
+        resp = groww.get_ltp(
+            segment=groww.SEGMENT_FNO,
+            exchange_trading_symbols=tuple(monthly_symbols)
+        )
+        for sym, raw in resp.items():
+            ltp = extract_ltp(raw)
+            if ltp:
+                st.session_state.options_ltp[sym] = ltp
+    except Exception as e:
+        log_error(str(e))
+
+weekly_symbol = "NIFTY2621025500CE"
+
+if groww:
+    try:
+        quote = groww.get_quote(
+            groww.EXCHANGE_NSE,
+            groww.SEGMENT_FNO,
+            weekly_symbol
+        )
+        ltp = extract_ltp(quote)
+        if ltp:
+            st.session_state.options_ltp[weekly_symbol] = ltp
+    except Exception as e:
+        log_error(str(e))
+
+# =========================================================
+# ENTRY LOGIC (STEP 2 – RESTORED)
+# =========================================================
+df = st.session_state.indicator_df
+if df is not None and not df.empty:
     latest = df.iloc[-1]
-    trend = "BULLISH" if latest["ema9"] > latest["ema21"] else "BEARISH"
+    trend_ok = latest["ema9"] > latest["ema21"]
+    rsi_ok = 35 < latest["rsi"] < 65
 
-    index_name = "NIFTY"
-    index_price = st.session_state.index_ltp.get(index_name)
-    if not index_price:
-        return None, None, None
+    if trend_ok and rsi_ok:
+        for symbol, ltp in st.session_state.options_ltp.items():
+            already_open = any(
+                p["symbol"] == symbol and p["status"] == "OPEN"
+                for p in st.session_state.positions
+            )
+            if already_open:
+                continue
 
-    step = STRIKE_STEP[index_name]
-    lot = LOT_SIZES[index_name]
-
-    atm = int(round(index_price / step) * step)
-
-    strikes = []
-    for i in range(0, 10):
-        strike = atm + (i * step if trend == "BULLISH" else -i * step)
-        strikes.append(strike)
-
-    for strike in strikes:
-        opt_type = "CE" if trend == "BULLISH" else "PE"
-        symbol = f"NSE_{index_name}26FEB{strike}{opt_type}"
-
-        ltp = st.session_state.options_ltp.get(symbol)
-        if ltp is None:
-            continue
-
-        cost = ltp * lot
-        if cost <= st.session_state.paper_balance:
-            return symbol, ltp, lot
-
-    return None, None, None
+            cost = ltp * LOT_SIZE
+            if st.session_state.paper_balance >= cost:
+                st.session_state.paper_balance -= cost
+                st.session_state.positions.append({
+                    "symbol": symbol,
+                    "entry_price": ltp,
+                    "qty": LOT_SIZE,
+                    "sl": round(ltp * (1 - INITIAL_SL_PCT), 2),
+                    "target": round(ltp * (1 + TARGET_PCT), 2),
+                    "entry_time": datetime.now().strftime("%H:%M:%S"),
+                    "status": "OPEN"
+                })
+                break
 
 # =========================================================
-# ENTRY USING DYNAMIC STRIKE
-# =========================================================
-symbol, ltp, lot = select_dynamic_symbol()
-if symbol and ltp:
-    already_open = any(
-        p["symbol"] == symbol and p["status"] == "OPEN"
-        for p in st.session_state.positions
-    )
-
-    if not already_open:
-        st.session_state.paper_balance -= ltp * lot
-        st.session_state.positions.append({
-            "symbol": symbol,
-            "entry_price": ltp,
-            "qty": lot,
-            "sl": round(ltp * (1 - INITIAL_SL_PCT), 2),
-            "target": round(ltp * (1 + TARGET_PCT), 2),
-            "entry_time": datetime.now().strftime("%H:%M:%S"),
-            "status": "OPEN"
-        })
-
-# =========================================================
-# POSITION MANAGEMENT (UNCHANGED)
+# POSITION MANAGEMENT (STEP 2)
 # =========================================================
 for pos in list(st.session_state.positions):
     ltp = st.session_state.options_ltp.get(pos["symbol"])
     if ltp is None:
         continue
 
+    # Trailing SL (only upward)
     trail_sl = round(ltp * (1 - TRAIL_SL_PCT), 2)
     if trail_sl > pos["sl"]:
         pos["sl"] = trail_sl
@@ -260,7 +258,7 @@ st.subheader("📜 Table 3: Trade History")
 st.dataframe(pd.DataFrame(st.session_state.closed_trades), use_container_width=True)
 
 # =========================================================
-# ERROR LOGS
+# ERROR LOGS (LOCKED)
 # =========================================================
 st.subheader("🛑 Error Logs")
 if st.session_state.errors:
