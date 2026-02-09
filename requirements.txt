@@ -1,6 +1,2 @@
-streamlit
+flask
 growwapi
-pyotp
-pandas
-streamlit-autorefresh
-matplotlib
