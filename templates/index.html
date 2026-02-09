@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Groww Live Paper Trading Bot</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <h2>🔑 Groww Tokens</h2>
+      <div class="token-group">
+        <label>Token 1</label>
+        <div class="token-row">
+          <input type="password" id="token1" placeholder="Token 1" />
+          <button class="eye" data-target="token1">👁</button>
+        </div>
+      </div>
+      <div class="token-group">
+        <label>Token 2</label>
+        <div class="token-row">
+          <input type="password" id="token2" placeholder="Token 2" />
+          <button class="eye" data-target="token2">👁</button>
+        </div>
+      </div>
+      <div class="token-group">
+        <label>Token 3</label>
+        <div class="token-row">
+          <input type="password" id="token3" placeholder="Token 3" />
+          <button class="eye" data-target="token3">👁</button>
+        </div>
+      </div>
+      <div class="token-group">
+        <label>Token 4</label>
+        <div class="token-row">
+          <input type="password" id="token4" placeholder="Token 4" />
+          <button class="eye" data-target="token4">👁</button>
+        </div>
+      </div>
+      <div class="token-group">
+        <label>Token 5</label>
+        <div class="token-row">
+          <input type="password" id="token5" placeholder="Token 5" />
+          <button class="eye" data-target="token5">👁</button>
+        </div>
+      </div>
+      <div class="button-row">
+        <button id="startBot" class="primary">▶ Start Bot</button>
+        <button id="stopBot" class="secondary">■ Stop Bot</button>
+      </div>
+      <p class="caption">Auto refresh every 5 seconds</p>
+      <div id="statusCard" class="status-card">Status: <span id="botStatus">Stopped</span></div>
+    </aside>
+
+    <main class="main">
+      <h1>🚀 Groww Live Paper Trading Bot</h1>
+
+      <section class="card">
+        <h3>📜 Table 3: Trade History</h3>
+        <div class="table-wrapper">
+          <table id="tradesTable">
+            <thead>
+              <tr>
+                <th>symbol</th>
+                <th>qty</th>
+                <th>entry_price</th>
+                <th>stop_loss</th>
+                <th>status</th>
+                <th>index</th>
+                <th>updated_at</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>🛑 Error Logs</h3>
+        <div class="table-wrapper">
+          <table id="errorsTable">
+            <thead>
+              <tr>
+                <th>time</th>
+                <th>token</th>
+                <th>api</th>
+                <th>symbol</th>
+                <th>error</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('botStatus');
+
+    function readTokens() {
+      return [1,2,3,4,5].map((i) => document.getElementById(`token${i}`).value);
+    }
+
+    async function startBot() {
+      const tokens = readTokens();
+      await fetch('/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tokens })
+      });
+    }
+
+    async function stopBot() {
+      await fetch('/stop', { method: 'POST' });
+    }
+
+    async function loadStatus() {
+      const res = await fetch('/status');
+      const data = await res.json();
+      statusEl.textContent = data.running ? 'Running' : 'Stopped';
+    }
+
+    function renderTable(tableId, rows, columns) {
+      const tbody = document.querySelector(`#${tableId} tbody`);
+      tbody.innerHTML = '';
+      if (!rows || rows.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = columns.length;
+        td.textContent = 'empty';
+        td.className = 'muted';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      rows.forEach((row) => {
+        const tr = document.createElement('tr');
+        columns.forEach((key) => {
+          const td = document.createElement('td');
+          td.textContent = row[key] ?? '';
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadTrades() {
+      const res = await fetch('/trades');
+      const data = await res.json();
+      renderTable('tradesTable', data, [
+        'symbol',
+        'qty',
+        'entry_price',
+        'stop_loss',
+        'status',
+        'index',
+        'updated_at'
+      ]);
+    }
+
+    async function loadErrors() {
+      const res = await fetch('/errors');
+      const data = await res.json();
+      renderTable('errorsTable', data, ['time', 'token', 'api', 'symbol', 'error']);
+    }
+
+    document.getElementById('startBot').addEventListener('click', startBot);
+    document.getElementById('stopBot').addEventListener('click', stopBot);
+
+    document.querySelectorAll('.eye').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.dataset.target;
+        const input = document.getElementById(targetId);
+        input.type = input.type === 'password' ? 'text' : 'password';
+      });
+    });
+
+    async function refresh() {
+      await Promise.all([loadStatus(), loadTrades(), loadErrors()]);
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
