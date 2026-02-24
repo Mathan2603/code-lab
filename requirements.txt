@@ -1,2 +1,3 @@
 flask
-growwapi
+growwapi>=1.5.0
+pytz>=2024.1

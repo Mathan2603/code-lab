@@ -209,6 +209,7 @@ class PositionModule:
             qty=trade["qty"],
             lot=trade["lot_size"],
             pnl=pnl,
+            capital_after=risk_module.capital,
         )
 
     def has_open_position(self, index_symbol: str) -> bool:
