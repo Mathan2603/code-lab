@@ -76,5 +76,9 @@ MARKET_OPEN_MINUTE = 15
 MARKET_CLOSE_HOUR = 15
 MARKET_CLOSE_MINUTE = 30
 
+# Expiry day trade cutoff (IST) - no new trades on same-day expiry after this time
+EXPIRY_DAY_CUTOFF_HOUR = 12
+EXPIRY_DAY_CUTOFF_MINUTE = 30
+
 # Logging
 LOG_FILE = "paper_trades_log.csv"

@@ -31,37 +31,56 @@ def get_api_token():
 
 def is_market_hours() -> bool:
     """Check if current time is within market hours (IST)."""
-    # IST = UTC + 5:30
-    import pytz
-    try:
-        ist = pytz.timezone("Asia/Kolkata")
-        now_ist = datetime.datetime.now(ist)
-    except ImportError:
-        # Fallback: assume UTC+5:30
-        now_ist = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+    now_ist = get_ist_now()
 
     current_time = now_ist.hour * 60 + now_ist.minute
     market_open = config.MARKET_OPEN_HOUR * 60 + config.MARKET_OPEN_MINUTE
     market_close = config.MARKET_CLOSE_HOUR * 60 + config.MARKET_CLOSE_MINUTE
 
     # Also check weekday (0=Monday, 6=Sunday)
-    if hasattr(now_ist, 'weekday'):
-        if now_ist.weekday() >= 5:  # Saturday or Sunday
-            return False
+    if now_ist.weekday() >= 5:  # Saturday or Sunday
+        return False
 
     return market_open <= current_time <= market_close
 
 
-def is_daily_reset_time() -> bool:
-    """Check if it's time for daily reset (9:15 IST)."""
+def get_ist_now():
+    """Get current time in IST."""
     try:
         import pytz
         ist = pytz.timezone("Asia/Kolkata")
-        now_ist = datetime.datetime.now(ist)
+        return datetime.datetime.now(ist)
     except ImportError:
-        now_ist = datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+        return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
+
+def is_daily_reset_time() -> bool:
+    """Check if it's time for daily reset (9:15 IST)."""
+    now_ist = get_ist_now()
     return now_ist.hour == config.MARKET_OPEN_HOUR and now_ist.minute == config.MARKET_OPEN_MINUTE
+
+
+def is_expiry_day_past_cutoff(expiry_date_str: str) -> bool:
+    """
+    Check if expiry is today AND current IST time is past the cutoff (12:30 PM IST).
+    If expiry is today and past cutoff -> True (skip this expiry, it's dead).
+    If expiry is today but before cutoff -> False (still tradeable).
+    If expiry is NOT today -> False (not relevant).
+    """
+    now_ist = get_ist_now()
+    today_str = now_ist.strftime("%Y-%m-%d")
+
+    if expiry_date_str != today_str:
+        return False  # Not expiry day, no cutoff applies
+
+    # Expiry is today - check if past cutoff
+    cutoff_minutes = config.EXPIRY_DAY_CUTOFF_HOUR * 60 + config.EXPIRY_DAY_CUTOFF_MINUTE
+    current_minutes = now_ist.hour * 60 + now_ist.minute
+
+    if current_minutes >= cutoff_minutes:
+        return True  # Past 12:30 PM IST on expiry day = dead expiry
+
+    return False  # Before 12:30 PM on expiry day = still tradeable
 
 
 def main():
@@ -164,6 +183,11 @@ def main():
 
                 for candidate_expiry in valid_expiries[:3]:  # Try up to 3 expiries
                     try:
+                        # Skip dead expiry: if expiry is today and past 12:30 PM IST
+                        if is_expiry_day_past_cutoff(candidate_expiry):
+                            print(f"  Expiry {candidate_expiry}: SKIPPED (expiry day past {config.EXPIRY_DAY_CUTOFF_HOUR}:{config.EXPIRY_DAY_CUTOFF_MINUTE:02d} IST cutoff)")
+                            continue
+
                         contracts_data = groww.get_contracts(
                             groww.EXCHANGE_NSE,
                             underlying,
